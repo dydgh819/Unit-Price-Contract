@@ -1,0 +1,677 @@
+// 단가계약 기술지도 관리 - Firestore-backed implementation.
+// Data model (Firestore):
+//   contracts/{id}: { factory, vendor, bizNo, projectName, location, start, end,
+//                      amount, dept, manager, email, renewedAt, createdAt }
+//   contracts/{id}/history/{historyId}: { start, end, amount, dept, manager, archivedAt }
+//   -> each "갱신" archives the current period into history, then updates the
+//      parent doc in place. 계약 이력 shows the parent (current) + its history.
+
+import { db } from './firebase-init.js';
+import {
+  collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc,
+  getDocs, query, orderBy, serverTimestamp
+} from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
+
+const CONTRACTS_COL = collection(db, 'contracts');
+
+const state = {
+  tab: 'all',            // 'all' | 'f1' | 'f2' | 'f3' | 'history'
+  filter: 'all',         // status chip filter
+  search: '',
+  contracts: [],
+  loading: true,
+
+  mailOpen: false,
+  mailContract: null,
+  mailBody: '',
+
+  formOpen: false,
+  formMode: 'add',       // 'add' | 'edit' | 'renew'
+  formContract: null,    // base contract doc for edit/renew
+  formValues: null,
+
+  histContractId: null,
+  historyEntries: [],
+  historyLoading: false,
+
+  toast: '',
+  toastShow: false
+};
+
+let toastTimer = null;
+let unsubHistory = null;
+
+const TAB_DEFS = [
+  ['all', '전체보기'],
+  ['f1', '1공장'],
+  ['f2', '2공장'],
+  ['f3', '3공장'],
+  ['history', '계약 이력']
+];
+const FACTORY_OF_TAB = { f1: 1, f2: 2, f3: 3, all: null };
+const TABLE_TITLE = { f1: '1공장 계약 관리', f2: '2공장 계약 관리', f3: '3공장 계약 관리', all: '전체 계약 관리' };
+const CHIP_KEYS = ['all', '진행중', '만료임박', '만료', '갱신완료'];
+const CHIP_LABEL = { all: '전체' };
+const WEEKDAY = ['일', '월', '화', '수', '목', '금', '토'];
+
+const FACTORY_COLOR = {
+  1: { color: '#2A6FDB', bg: '#EAF1FB' },
+  2: { color: '#1F8A5B', bg: '#E7F4EE' },
+  3: { color: '#7C5CDB', bg: '#F0ECFB' }
+};
+const STATUS_STYLE = {
+  OVERDUE: { label: '만료', color: '#E53935', bg: '#FDECEC' },
+  URGENT: { label: '만료임박', color: '#C15C00', bg: '#FFF3E0' },
+  UPCOMING: { label: '진행중', color: '#5B6270', bg: '#EEF0F2' },
+  RENEWED: { label: '갱신완료', color: '#4B54B8', bg: '#ECEDFB' }
+};
+const BUCKET_ACCENT = { OVERDUE: '#E53935', URGENT: '#FB8C00', UPCOMING: '#B4B9C2', RENEWED: '#5C6BC0' };
+
+// ---- date / format helpers ----
+
+function fmtDate(s) {
+  return s ? s.replace(/-/g, '.') : '';
+}
+function fmtAmount(n) {
+  return '₩ ' + Number(n || 0).toLocaleString('ko-KR');
+}
+function toISO(d) {
+  return d.toISOString().slice(0, 10);
+}
+function addDays(dateStr, n) {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() + n);
+  return toISO(d);
+}
+function addYearsMinus1Day(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setFullYear(d.getFullYear() + 1);
+  d.setDate(d.getDate() - 1);
+  return toISO(d);
+}
+function daysTo(end) {
+  const e = new Date(end + 'T00:00:00');
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.round((e - today) / 86400000);
+}
+function toDateSafe(v) {
+  if (!v) return null;
+  return typeof v.toDate === 'function' ? v.toDate() : new Date(v);
+}
+
+function bucketOf(c) {
+  const renewedAt = toDateSafe(c.renewedAt);
+  if (renewedAt) {
+    const today = new Date();
+    if (Math.round((today - renewedAt) / 86400000) <= 30) return 'RENEWED';
+  }
+  const diff = daysTo(c.end);
+  if (diff < 0) return 'OVERDUE';
+  if (diff <= 30) return 'URGENT';
+  return 'UPCOMING';
+}
+
+function enrich(c) {
+  const bucket = bucketOf(c);
+  const f = FACTORY_COLOR[c.factory];
+  const s = STATUS_STYLE[bucket];
+  const accentBar = BUCKET_ACCENT[bucket];
+  return {
+    id: c.id,
+    vendor: c.vendor,
+    factory: c.factory,
+    factoryLabel: c.factory + '공장',
+    factoryColor: f.color,
+    factoryBg: f.bg,
+    projectName: c.projectName,
+    periodDisp: fmtDate(c.start) + ' ~ ' + fmtDate(c.end),
+    amount: fmtAmount(c.amount),
+    bizNo: c.bizNo,
+    deptDisp: c.dept + ' · ' + c.manager,
+    email: c.email,
+    bucket,
+    statusLabel: s.label,
+    statusColor: s.color,
+    statusBg: s.bg,
+    rowBg: bucket === 'OVERDUE' ? '#FDF2F2' : (bucket === 'URGENT' ? '#FFF8EE' : '#fff'),
+    accentBar: (bucket === 'OVERDUE' || bucket === 'URGENT') ? accentBar : 'transparent'
+  };
+}
+
+function findRaw(id) {
+  return state.contracts.find(c => c.id === id) || null;
+}
+
+// ---- toast ----
+
+function showToast(msg) {
+  if (toastTimer) clearTimeout(toastTimer);
+  state.toast = msg;
+  state.toastShow = true;
+  render();
+  toastTimer = setTimeout(() => { state.toastShow = false; render(); }, 2600);
+}
+
+// ---- mail modal ----
+
+function openMail(contract) {
+  const endDisp = contract.periodDisp.split(' ~ ')[1];
+  const body = '안녕하세요, ' + contract.vendor + ' 담당자님.\n\n' +
+    '울산 ' + contract.factory + '공장 「' + contract.projectName + '」 재해예방 기술지도 계약이 ' + endDisp + ' 만료 예정입니다.\n' +
+    '계약 갱신을 위해 아래 서류 제출 및 일정 협의를 부탁드립니다.\n\n' +
+    '  1. 계약서\n  2. 산재보험 가입증명원\n  3. 사업자등록증 사본\n\n' +
+    '회신 기한: 만료일 7일 전까지\n감사합니다.\n\n울산 안전보건팀 드림';
+  state.mailOpen = true;
+  state.mailContract = contract;
+  state.mailBody = body;
+  render();
+}
+function closeMail() {
+  state.mailOpen = false;
+  render();
+}
+function openMailApp() {
+  const c = state.mailContract;
+  if (!c) return;
+  const subject = '[울산 ' + c.factory + '공장] 재해예방 기술지도 계약 갱신 안내';
+  window.location.href = 'mailto:' + c.email + '?subject=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(state.mailBody);
+  state.mailOpen = false;
+  render();
+  showToast('메일 프로그램을 실행합니다');
+}
+
+// ---- add / edit / renew form ----
+
+function openAddForm() {
+  state.formMode = 'add';
+  state.formContract = null;
+  state.formValues = { factory: 1, vendor: '', bizNo: '', projectName: '', location: '', start: '', end: '', amount: '', dept: '', manager: '', email: '' };
+  state.formOpen = true;
+  render();
+}
+function openEditForm(c) {
+  state.formMode = 'edit';
+  state.formContract = c;
+  state.formValues = { factory: c.factory, vendor: c.vendor, bizNo: c.bizNo, projectName: c.projectName, location: c.location, start: c.start, end: c.end, amount: c.amount, dept: c.dept, manager: c.manager, email: c.email };
+  state.formOpen = true;
+  render();
+}
+function openRenewForm(c) {
+  const newStart = addDays(c.end, 1);
+  const newEnd = addYearsMinus1Day(newStart);
+  state.formMode = 'renew';
+  state.formContract = c;
+  state.formValues = { factory: c.factory, vendor: c.vendor, bizNo: c.bizNo, projectName: c.projectName, location: c.location, start: newStart, end: newEnd, amount: c.amount, dept: c.dept, manager: c.manager, email: c.email };
+  state.formOpen = true;
+  render();
+}
+function closeForm() {
+  state.formOpen = false;
+  render();
+}
+
+async function handleSubmit(e) {
+  if (e.target.id !== 'contract-form') return;
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const values = {
+    factory: Number(fd.get('factory')),
+    vendor: String(fd.get('vendor') || '').trim(),
+    bizNo: String(fd.get('bizNo') || '').trim(),
+    projectName: String(fd.get('projectName') || '').trim(),
+    location: String(fd.get('location') || '').trim(),
+    start: fd.get('start'),
+    end: fd.get('end'),
+    amount: Number(fd.get('amount')),
+    dept: String(fd.get('dept') || '').trim(),
+    manager: String(fd.get('manager') || '').trim(),
+    email: String(fd.get('email') || '').trim()
+  };
+
+  const submitBtn = e.target.ownerDocument.querySelector('[form="contract-form"]');
+  if (submitBtn) submitBtn.disabled = true;
+
+  try {
+    if (state.formMode === 'add') {
+      await addDoc(CONTRACTS_COL, { ...values, renewedAt: null, createdAt: serverTimestamp() });
+      showToast(values.vendor + ' 계약이 추가되었습니다');
+    } else if (state.formMode === 'edit') {
+      await updateDoc(doc(db, 'contracts', state.formContract.id), values);
+      showToast(values.vendor + ' 정보가 수정되었습니다');
+    } else if (state.formMode === 'renew') {
+      const old = state.formContract;
+      await addDoc(collection(db, 'contracts', old.id, 'history'), {
+        start: old.start, end: old.end, amount: old.amount,
+        dept: old.dept, manager: old.manager, archivedAt: serverTimestamp()
+      });
+      await updateDoc(doc(db, 'contracts', old.id), { ...values, renewedAt: serverTimestamp() });
+      showToast(values.vendor + ' 갱신 처리 완료');
+    }
+    closeForm();
+  } catch (err) {
+    console.error(err);
+    showToast('저장 중 오류가 발생했습니다: ' + err.message);
+    render();
+  }
+}
+
+async function handleDelete(c) {
+  const ok = window.confirm(c.vendor + ' 계약을 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.');
+  if (!ok) return;
+  try {
+    const historySnap = await getDocs(collection(db, 'contracts', c.id, 'history'));
+    await Promise.all(historySnap.docs.map(d => deleteDoc(d.ref)));
+    await deleteDoc(doc(db, 'contracts', c.id));
+    showToast(c.vendor + ' 삭제됨');
+  } catch (err) {
+    console.error(err);
+    showToast('삭제 중 오류가 발생했습니다: ' + err.message);
+  }
+}
+
+// ---- 계약 이력 subscription ----
+
+function subscribeHistory(contractId) {
+  if (unsubHistory) { unsubHistory(); unsubHistory = null; }
+  state.historyEntries = [];
+  if (!contractId) { render(); return; }
+  state.historyLoading = true;
+  const q = query(collection(db, 'contracts', contractId, 'history'), orderBy('archivedAt', 'desc'));
+  unsubHistory = onSnapshot(q, snap => {
+    state.historyEntries = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    state.historyLoading = false;
+    render();
+  }, err => {
+    console.error(err);
+    state.historyLoading = false;
+    render();
+  });
+}
+
+// ---- render ----
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
+function renderTopbar(urgentCount) {
+  const today = new Date();
+  const todayDisp = today.getFullYear() + '년 ' + (today.getMonth() + 1) + '월 ' + today.getDate() + '일 (' + WEEKDAY[today.getDay()] + ')';
+  return `
+    <div class="topbar">
+      <div class="topbar-left">
+        <div class="logo-box"><div class="logo-diamond"></div></div>
+        <div class="brand-text">
+          <div class="brand-title">단가계약 기술지도 관리</div>
+          <div class="brand-sub">울산 1·2·3공장</div>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <div class="today-text">${todayDisp}</div>
+        <div class="urgent-badge">만료임박 ${urgentCount}건</div>
+        <button class="bell-btn" title="알림">
+          <div class="bell-icon"></div>
+          <div class="bell-dot"></div>
+        </button>
+      </div>
+    </div>`;
+}
+
+function renderTabbar() {
+  const items = TAB_DEFS.map(([key, label]) =>
+    `<button class="tab-btn${state.tab === key ? ' active' : ''}" data-action="set-tab" data-tab="${key}">${label}</button>`
+  ).join('');
+  return `<div class="tabbar"><div class="tabbar-inner">${items}</div></div>`;
+}
+
+function renderTableView() {
+  if (state.loading) {
+    return `<div class="table-view"><div class="loading-state">데이터를 불러오는 중입니다...</div></div>`;
+  }
+
+  const factoryFilter = FACTORY_OF_TAB[state.tab];
+  const q = state.search.trim();
+  const all = state.contracts.map(enrich);
+  let rows = all.filter(x =>
+    (factoryFilter == null || x.factory === factoryFilter) &&
+    (state.filter === 'all' || x.statusLabel === state.filter) &&
+    (q === '' || x.vendor.includes(q) || x.projectName.includes(q))
+  );
+  rows = rows.map((x, i) => Object.assign({}, x, { idx: i + 1 }));
+
+  const chips = CHIP_KEYS.map(k => {
+    const on = state.filter === k;
+    return `<button class="chip${on ? ' active' : ''}" data-action="set-filter" data-filter="${k}">${CHIP_LABEL[k] || k}</button>`;
+  }).join('');
+
+  const rowsHtml = rows.map(r => `
+      <tr style="background:${r.rowBg}">
+        <td class="td-idx" style="border-left-color:${r.accentBar}">${r.idx}</td>
+        <td><span class="factory-badge" style="color:${r.factoryColor};background:${r.factoryBg}">${r.factoryLabel}</span></td>
+        <td class="td-vendor">${esc(r.vendor)}</td>
+        <td class="td-bizno">${esc(r.bizNo)}</td>
+        <td class="td-project">${esc(r.projectName)}</td>
+        <td class="td-period">${esc(r.periodDisp)}</td>
+        <td class="td-amount">${esc(r.amount)}</td>
+        <td class="td-dept">${esc(r.deptDisp)}</td>
+        <td><span class="status-badge" style="color:${r.statusColor};background:${r.statusBg}">${r.statusLabel}</span></td>
+        <td class="td-actions">
+          <div class="action-row">
+            <button class="btn-mail" data-action="mail" data-id="${r.id}">메일</button>
+            <button class="btn-secondary" data-action="renew" data-id="${r.id}">갱신</button>
+            <button class="btn-secondary" data-action="edit" data-id="${r.id}">수정</button>
+            <button class="btn-danger" data-action="delete" data-id="${r.id}">삭제</button>
+          </div>
+        </td>
+      </tr>`).join('');
+
+  const emptyMsg = all.length === 0
+    ? '등록된 계약이 없습니다. 우측 상단의 "+ 공사건 추가" 버튼으로 계약을 등록해 주세요.'
+    : '조건에 맞는 계약이 없습니다.';
+
+  return `
+    <div class="table-view">
+      <div class="table-header">
+        <div class="table-title">${TABLE_TITLE[state.tab] || ''}</div>
+        <button class="btn-add" data-action="add">+ 공사건 추가</button>
+      </div>
+      <div class="toolbar">
+        <input id="search-input" class="search-input" placeholder="협력업체·공사명 검색" value="${esc(state.search)}" />
+        <div class="chips">${chips}</div>
+      </div>
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>연번</th>
+              <th>공장</th>
+              <th style="white-space:nowrap">협력업체명</th>
+              <th>사업자번호</th>
+              <th>공사명</th>
+              <th>사업기간</th>
+              <th>총공사금액</th>
+              <th>담당</th>
+              <th>상태</th>
+              <th>액션</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+        ${rows.length === 0 ? `<div class="no-rows">${emptyMsg}</div>` : ''}
+      </div>
+      <div class="table-footnote">만료 경과·만료임박 건은 좌측 컬러 바와 배경으로 강조됩니다.</div>
+    </div>`;
+}
+
+function renderHistoryView() {
+  if (state.loading) {
+    return `<div class="history-view"><div class="loading-state">데이터를 불러오는 중입니다...</div></div>`;
+  }
+  if (state.contracts.length === 0) {
+    return `<div class="history-view">
+      <div class="history-title">계약 이력</div>
+      <div class="history-desc">등록된 계약이 없습니다. 공사건을 먼저 추가해 주세요.</div>
+    </div>`;
+  }
+
+  const chips = state.contracts.map(c => {
+    const on = state.histContractId === c.id;
+    return `<button class="history-chip${on ? ' active' : ''}" data-action="set-hist-contract" data-id="${c.id}">${esc(c.vendor)} (${c.factory}공장)</button>`;
+  }).join('');
+
+  const current = findRaw(state.histContractId);
+  let nodesHtml = '';
+  if (current) {
+    if (state.historyLoading) {
+      nodesHtml = `<div class="loading-state">이력을 불러오는 중입니다...</div>`;
+    } else {
+      const entries = [
+        { start: current.start, end: current.end, amount: current.amount, dept: current.dept, manager: current.manager },
+        ...state.historyEntries
+      ];
+      const total = entries.length;
+      nodesHtml = entries.map((n, i) => {
+        const renewalNumber = total - 1 - i;
+        const label = (renewalNumber === 0 ? '최초 계약' : renewalNumber + '차 갱신') + (i === 0 ? ' (현재)' : '');
+        const isCurrent = i === 0;
+        const statusText = isCurrent ? '진행중' : '완료';
+        const statusColor = isCurrent ? '#1F8A5B' : '#8A8F98';
+        const statusBg = isCurrent ? '#E7F4EE' : '#EEF0F2';
+        const dotColor = isCurrent ? '#43A047' : '#B4B9C2';
+        const dotRing = isCurrent ? '#CDEBD9' : '#E5E7EB';
+        return `
+          <div class="timeline-node">
+            <div class="timeline-dot-col">
+              <span class="timeline-dot" style="background:${dotColor};border-color:${dotRing}"></span>
+              <span class="timeline-line"></span>
+            </div>
+            <div class="timeline-card">
+              <div class="timeline-head">
+                <div class="timeline-head-left">
+                  <span class="timeline-label">${esc(label)}</span>
+                  <span class="timeline-status" style="color:${statusColor};background:${statusBg}">${statusText}</span>
+                </div>
+                <span class="timeline-amount">${esc(fmtAmount(n.amount))}</span>
+              </div>
+              <div class="timeline-period">계약기간 ${esc(fmtDate(n.start))} ~ ${esc(fmtDate(n.end))}</div>
+              <div class="timeline-dept">담당 ${esc(n.dept)} · ${esc(n.manager)}</div>
+            </div>
+          </div>`;
+      }).join('');
+    }
+  }
+
+  return `
+    <div class="history-view">
+      <div class="history-title">계약 이력</div>
+      <div class="history-desc">업체를 선택하면 최초 계약부터 현재까지의 갱신 계보를 최신순으로 확인할 수 있습니다.</div>
+      <div class="history-vendors">${chips}</div>
+      <div>${nodesHtml}</div>
+    </div>`;
+}
+
+function renderMailModal() {
+  if (!state.mailOpen) return '';
+  const c = state.mailContract;
+  return `
+    <div class="modal-overlay">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div>
+            <div class="modal-title">갱신 안내 메일</div>
+            <div class="modal-subtitle">받는사람 · ${esc(c ? c.email : '')}</div>
+          </div>
+          <button class="modal-close" data-action="close-mail">✕</button>
+        </div>
+        <div class="modal-body">
+          <textarea id="mail-textarea" class="modal-textarea">${esc(state.mailBody)}</textarea>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-cancel" data-action="close-mail">취소</button>
+          <button class="btn-primary" data-action="open-mail-app">메일 프로그램 열기</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+const FORM_TITLE = { add: '공사건 추가', edit: '계약 정보 수정', renew: '계약 갱신' };
+const FORM_SUBMIT_LABEL = { add: '추가', edit: '저장', renew: '갱신 저장' };
+
+function renderFormModal() {
+  if (!state.formOpen) return '';
+  const v = state.formValues;
+  const factoryOptions = [1, 2, 3].map(f =>
+    `<option value="${f}"${v.factory === f ? ' selected' : ''}>${f}공장</option>`
+  ).join('');
+
+  return `
+    <div class="modal-overlay">
+      <div class="modal-card form-card">
+        <div class="modal-header">
+          <div class="modal-title">${FORM_TITLE[state.formMode]}${state.formMode !== 'add' ? ' · ' + esc(v.vendor) : ''}</div>
+          <button class="modal-close" data-action="close-form">✕</button>
+        </div>
+        <form id="contract-form" class="form-body">
+          <div class="form-grid">
+            <label class="form-field"><span>공장</span><select name="factory">${factoryOptions}</select></label>
+            <label class="form-field"><span>협력업체명</span><input name="vendor" required value="${esc(v.vendor)}"></label>
+            <label class="form-field"><span>사업자등록번호</span><input name="bizNo" required value="${esc(v.bizNo)}" placeholder="000-00-00000"></label>
+            <label class="form-field"><span>공사장소재지</span><input name="location" required value="${esc(v.location)}"></label>
+            <label class="form-field form-field-wide"><span>공사명</span><input name="projectName" required value="${esc(v.projectName)}"></label>
+            <label class="form-field"><span>사업 시작일</span><input type="date" name="start" required value="${esc(v.start)}"></label>
+            <label class="form-field"><span>사업 종료일</span><input type="date" name="end" required value="${esc(v.end)}"></label>
+            <label class="form-field"><span>총공사금액 (원)</span><input type="number" name="amount" min="0" required value="${esc(v.amount)}"></label>
+            <label class="form-field"><span>공사담당부서</span><input name="dept" required value="${esc(v.dept)}"></label>
+            <label class="form-field"><span>공사담당자</span><input name="manager" required value="${esc(v.manager)}"></label>
+            <label class="form-field"><span>담당자 이메일</span><input type="email" name="email" required value="${esc(v.email)}"></label>
+          </div>
+        </form>
+        <div class="modal-footer">
+          <button class="btn-cancel" type="button" data-action="close-form">취소</button>
+          <button class="btn-primary" type="submit" form="contract-form">${FORM_SUBMIT_LABEL[state.formMode]}</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderToast() {
+  if (!state.toastShow) return '';
+  return `<div class="toast">${esc(state.toast)}</div>`;
+}
+
+function renderApp() {
+  const all = state.contracts.map(enrich);
+  const urgentCount = all.filter(x => x.bucket === 'OVERDUE' || x.bucket === 'URGENT').length;
+  const main = state.tab === 'history' ? renderHistoryView() : renderTableView();
+  return `
+    ${renderTopbar(urgentCount)}
+    ${renderTabbar()}
+    <div class="content">${main}</div>
+    ${renderMailModal()}
+    ${renderFormModal()}
+    ${renderToast()}
+  `;
+}
+
+function render() {
+  const active = document.activeElement;
+  let focusId = null, selStart = null, selEnd = null;
+  if (active && (active.id === 'search-input' || active.id === 'mail-textarea')) {
+    focusId = active.id;
+    selStart = active.selectionStart;
+    selEnd = active.selectionEnd;
+  }
+  document.getElementById('app').innerHTML = renderApp();
+  if (focusId) {
+    const el = document.getElementById(focusId);
+    if (el) {
+      el.focus();
+      if (typeof selStart === 'number') el.setSelectionRange(selStart, selEnd);
+    }
+  }
+}
+
+// ---- events ----
+
+function handleClick(e) {
+  if (e.target.classList.contains('modal-overlay')) {
+    if (state.mailOpen) closeMail();
+    if (state.formOpen) closeForm();
+    return;
+  }
+  const btn = e.target.closest('[data-action]');
+  if (!btn) return;
+  const action = btn.dataset.action;
+  switch (action) {
+    case 'set-tab':
+      state.tab = btn.dataset.tab;
+      if (state.tab === 'history') {
+        if (!state.histContractId || !state.contracts.some(c => c.id === state.histContractId)) {
+          state.histContractId = state.contracts[0] ? state.contracts[0].id : null;
+        }
+        subscribeHistory(state.histContractId);
+      }
+      render();
+      break;
+    case 'set-filter':
+      state.filter = btn.dataset.filter;
+      render();
+      break;
+    case 'set-hist-contract':
+      state.histContractId = btn.dataset.id;
+      subscribeHistory(state.histContractId);
+      render();
+      break;
+    case 'add':
+      openAddForm();
+      break;
+    case 'mail': {
+      const row = findRaw(btn.dataset.id);
+      if (row) openMail(enrich(row));
+      break;
+    }
+    case 'renew': {
+      const row = findRaw(btn.dataset.id);
+      if (row) openRenewForm(row);
+      break;
+    }
+    case 'edit': {
+      const row = findRaw(btn.dataset.id);
+      if (row) openEditForm(row);
+      break;
+    }
+    case 'delete': {
+      const row = findRaw(btn.dataset.id);
+      if (row) handleDelete(row);
+      break;
+    }
+    case 'close-mail':
+      closeMail();
+      break;
+    case 'open-mail-app':
+      openMailApp();
+      break;
+    case 'close-form':
+      closeForm();
+      break;
+  }
+}
+
+function handleInput(e) {
+  if (e.target.id === 'search-input') {
+    state.search = e.target.value;
+    render();
+  } else if (e.target.id === 'mail-textarea') {
+    // No re-render needed: nothing else derives from mailBody until send.
+    state.mailBody = e.target.value;
+  }
+}
+
+const appEl = document.getElementById('app');
+appEl.addEventListener('click', handleClick);
+appEl.addEventListener('input', handleInput);
+appEl.addEventListener('submit', handleSubmit);
+
+render();
+
+onSnapshot(CONTRACTS_COL, snap => {
+  state.contracts = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  state.loading = false;
+  if (state.tab === 'history') {
+    const stillExists = state.contracts.some(c => c.id === state.histContractId);
+    if (!stillExists) {
+      const newId = state.contracts[0] ? state.contracts[0].id : null;
+      if (newId !== state.histContractId) {
+        state.histContractId = newId;
+        subscribeHistory(newId);
+        return; // subscribeHistory triggers its own render
+      }
+    }
+  }
+  render();
+}, err => {
+  console.error(err);
+  state.loading = false;
+  showToast('데이터를 불러오지 못했습니다: ' + err.message);
+});
