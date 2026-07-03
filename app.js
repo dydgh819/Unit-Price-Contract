@@ -21,6 +21,8 @@ const state = {
   contracts: [],
   loading: true,
 
+  editingId: null,       // null | 'NEW' | contract id currently editable in the table
+
   mailOpen: false,
   mailContract: null,
   mailBody: '',
@@ -125,6 +127,7 @@ function enrich(c) {
     factoryColor: f.color,
     factoryBg: f.bg,
     projectName: c.projectName,
+    location: c.location,
     periodDisp: fmtDate(c.start) + ' ~ ' + fmtDate(c.end),
     amount: fmtAmount(c.amount),
     bizNo: c.bizNo,
@@ -181,23 +184,22 @@ function openMailApp() {
   showToast('메일 프로그램을 실행합니다');
 }
 
-// ---- add / edit / renew form ----
+// ---- inline row editing (add / edit) + renew form ----
 
-function openAddForm() {
-  state.formMode = 'add';
-  state.formContract = null;
-  state.formValues = { factory: 1, vendor: '', bizNo: '', projectName: '', location: '', start: '', end: '', amount: '', dept: '', manager: '', email: '' };
-  state.formOpen = true;
+function startAddRow() {
+  state.editingId = 'NEW';
   render();
 }
-function openEditForm(c) {
-  state.formMode = 'edit';
-  state.formContract = c;
-  state.formValues = { factory: c.factory, vendor: c.vendor, bizNo: c.bizNo, projectName: c.projectName, location: c.location, start: c.start, end: c.end, amount: c.amount, dept: c.dept, manager: c.manager, email: c.email };
-  state.formOpen = true;
+function startEditRow(c) {
+  state.editingId = c.id;
+  render();
+}
+function cancelEditRow() {
+  state.editingId = null;
   render();
 }
 function openRenewForm(c) {
+  state.editingId = null;
   const newStart = addDays(c.end, 1);
   const newEnd = addYearsMinus1Day(newStart);
   state.formMode = 'renew';
@@ -212,7 +214,11 @@ function closeForm() {
 }
 
 async function handleSubmit(e) {
-  if (e.target.id !== 'contract-form') return;
+  if (e.target.id === 'contract-form') return handleRenewSubmit(e);
+  if (e.target.id === 'row-form') return handleInlineSubmit(e);
+}
+
+async function handleRenewSubmit(e) {
   e.preventDefault();
   const fd = new FormData(e.target);
   const values = {
@@ -233,26 +239,55 @@ async function handleSubmit(e) {
   if (submitBtn) submitBtn.disabled = true;
 
   try {
-    if (state.formMode === 'add') {
-      await addDoc(CONTRACTS_COL, { ...values, renewedAt: null, createdAt: serverTimestamp() });
-      showToast(values.vendor + ' 계약이 추가되었습니다');
-    } else if (state.formMode === 'edit') {
-      await updateDoc(doc(db, 'contracts', state.formContract.id), values);
-      showToast(values.vendor + ' 정보가 수정되었습니다');
-    } else if (state.formMode === 'renew') {
-      const old = state.formContract;
-      await addDoc(collection(db, 'contracts', old.id, 'history'), {
-        start: old.start, end: old.end, amount: old.amount,
-        dept: old.dept, manager: old.manager, archivedAt: serverTimestamp()
-      });
-      await updateDoc(doc(db, 'contracts', old.id), { ...values, renewedAt: serverTimestamp() });
-      showToast(values.vendor + ' 갱신 처리 완료');
-    }
+    const old = state.formContract;
+    await addDoc(collection(db, 'contracts', old.id, 'history'), {
+      start: old.start, end: old.end, amount: old.amount,
+      dept: old.dept, manager: old.manager, archivedAt: serverTimestamp()
+    });
+    await updateDoc(doc(db, 'contracts', old.id), { ...values, renewedAt: serverTimestamp() });
+    showToast(values.vendor + ' 갱신 처리 완료');
     closeForm();
   } catch (err) {
     console.error(err);
     showToast('저장 중 오류가 발생했습니다: ' + err.message);
     render();
+  }
+}
+
+async function handleInlineSubmit(e) {
+  e.preventDefault();
+  const val = id => document.getElementById(id).value;
+  const values = {
+    factory: Number(val('ef-factory')),
+    vendor: val('ef-vendor').trim(),
+    bizNo: val('ef-bizNo').trim(),
+    projectName: val('ef-projectName').trim(),
+    location: val('ef-location').trim(),
+    start: val('ef-start'),
+    end: val('ef-end'),
+    amount: Number(val('ef-amount')),
+    dept: val('ef-dept').trim(),
+    manager: val('ef-manager').trim(),
+    email: val('ef-email').trim()
+  };
+
+  const saveBtn = e.target.querySelector('.row-editing .btn-primary');
+  if (saveBtn) saveBtn.disabled = true;
+
+  try {
+    if (state.editingId === 'NEW') {
+      await addDoc(CONTRACTS_COL, { ...values, renewedAt: null, createdAt: serverTimestamp() });
+      showToast(values.vendor + ' 계약이 추가되었습니다');
+    } else {
+      await updateDoc(doc(db, 'contracts', state.editingId), values);
+      showToast(values.vendor + ' 정보가 수정되었습니다');
+    }
+    state.editingId = null;
+    render();
+  } catch (err) {
+    console.error(err);
+    if (saveBtn) saveBtn.disabled = false;
+    showToast('저장 중 오류가 발생했습니다: ' + err.message);
   }
 }
 
@@ -345,26 +380,8 @@ function renderTableView() {
     return `<button class="chip${on ? ' active' : ''}" data-action="set-filter" data-filter="${k}">${CHIP_LABEL[k] || k}</button>`;
   }).join('');
 
-  const rowsHtml = rows.map(r => `
-      <tr style="background:${r.rowBg}">
-        <td class="td-idx" style="border-left-color:${r.accentBar}">${r.idx}</td>
-        <td><span class="factory-badge" style="color:${r.factoryColor};background:${r.factoryBg}">${r.factoryLabel}</span></td>
-        <td class="td-vendor">${esc(r.vendor)}</td>
-        <td class="td-bizno">${esc(r.bizNo)}</td>
-        <td class="td-project">${esc(r.projectName)}</td>
-        <td class="td-period">${esc(r.periodDisp)}</td>
-        <td class="td-amount">${esc(r.amount)}</td>
-        <td class="td-dept">${esc(r.deptDisp)}</td>
-        <td><span class="status-badge" style="color:${r.statusColor};background:${r.statusBg}">${r.statusLabel}</span></td>
-        <td class="td-actions">
-          <div class="action-row">
-            <button class="btn-mail" data-action="mail" data-id="${r.id}">메일</button>
-            <button class="btn-secondary" data-action="renew" data-id="${r.id}">갱신</button>
-            <button class="btn-secondary" data-action="edit" data-id="${r.id}">수정</button>
-            <button class="btn-danger" data-action="delete" data-id="${r.id}">삭제</button>
-          </div>
-        </td>
-      </tr>`).join('');
+  const newRowHtml = state.editingId === 'NEW' ? renderEditRow(null) : '';
+  const rowsHtml = rows.map(r => state.editingId === r.id ? renderEditRow(r) : renderRow(r)).join('');
 
   const emptyMsg = all.length === 0
     ? '등록된 계약이 없습니다. 우측 상단의 "+ 공사건 추가" 버튼으로 계약을 등록해 주세요.'
@@ -374,34 +391,98 @@ function renderTableView() {
     <div class="table-view">
       <div class="table-header">
         <div class="table-title">${TABLE_TITLE[state.tab] || ''}</div>
-        <button class="btn-add" data-action="add">+ 공사건 추가</button>
+        <button class="btn-add" type="button" data-action="add">+ 공사건 추가</button>
       </div>
       <div class="toolbar">
         <input id="search-input" class="search-input" placeholder="협력업체·공사명 검색" value="${esc(state.search)}" />
         <div class="chips">${chips}</div>
       </div>
       <div class="table-card">
-        <table>
-          <thead>
-            <tr>
-              <th>연번</th>
-              <th>공장</th>
-              <th style="white-space:nowrap">협력업체명</th>
-              <th>사업자번호</th>
-              <th>공사명</th>
-              <th>사업기간</th>
-              <th>총공사금액</th>
-              <th>담당</th>
-              <th>상태</th>
-              <th>액션</th>
-            </tr>
-          </thead>
-          <tbody>${rowsHtml}</tbody>
-        </table>
-        ${rows.length === 0 ? `<div class="no-rows">${emptyMsg}</div>` : ''}
+        <form id="row-form">
+          <table>
+            <thead>
+              <tr>
+                <th>연번</th>
+                <th>공장</th>
+                <th style="white-space:nowrap">협력업체명</th>
+                <th>사업자번호</th>
+                <th>공사명</th>
+                <th>소재지</th>
+                <th>사업기간</th>
+                <th>총공사금액</th>
+                <th>담당</th>
+                <th>이메일</th>
+                <th>상태</th>
+                <th>액션</th>
+              </tr>
+            </thead>
+            <tbody>${newRowHtml}${rowsHtml}</tbody>
+          </table>
+        </form>
+        ${rows.length === 0 && !newRowHtml ? `<div class="no-rows">${emptyMsg}</div>` : ''}
       </div>
       <div class="table-footnote">만료 경과·만료임박 건은 좌측 컬러 바와 배경으로 강조됩니다.</div>
     </div>`;
+}
+
+function renderRow(r) {
+  return `
+      <tr style="background:${r.rowBg}">
+        <td class="td-idx" style="border-left-color:${r.accentBar}">${r.idx}</td>
+        <td><span class="factory-badge" style="color:${r.factoryColor};background:${r.factoryBg}">${r.factoryLabel}</span></td>
+        <td class="td-vendor">${esc(r.vendor)}</td>
+        <td class="td-bizno">${esc(r.bizNo)}</td>
+        <td class="td-project">${esc(r.projectName)}</td>
+        <td class="td-location">${esc(r.location)}</td>
+        <td class="td-period">${esc(r.periodDisp)}</td>
+        <td class="td-amount">${esc(r.amount)}</td>
+        <td class="td-dept">${esc(r.deptDisp)}</td>
+        <td class="td-email">${esc(r.email)}</td>
+        <td><span class="status-badge" style="color:${r.statusColor};background:${r.statusBg}">${r.statusLabel}</span></td>
+        <td class="td-actions">
+          <div class="action-row">
+            <button class="btn-mail" type="button" data-action="mail" data-id="${r.id}">메일</button>
+            <button class="btn-secondary" type="button" data-action="renew" data-id="${r.id}">갱신</button>
+            <button class="btn-secondary" type="button" data-action="edit" data-id="${r.id}">수정</button>
+            <button class="btn-danger" type="button" data-action="delete" data-id="${r.id}">삭제</button>
+          </div>
+        </td>
+      </tr>`;
+}
+
+function renderEditRow(enrichedRow) {
+  const raw = enrichedRow ? findRaw(enrichedRow.id) : null;
+  const v = raw || { factory: FACTORY_OF_TAB[state.tab] || 1, vendor: '', bizNo: '', projectName: '', location: '', start: '', end: '', amount: '', dept: '', manager: '', email: '' };
+  const idxLabel = enrichedRow ? enrichedRow.idx : '신규';
+  const factoryOptions = [1, 2, 3].map(f =>
+    `<option value="${f}"${v.factory === f ? ' selected' : ''}>${f}공장</option>`
+  ).join('');
+
+  return `
+      <tr class="row-editing">
+        <td class="td-idx">${idxLabel}</td>
+        <td><select id="ef-factory">${factoryOptions}</select></td>
+        <td><input id="ef-vendor" required value="${esc(v.vendor)}" placeholder="협력업체명"></td>
+        <td><input id="ef-bizNo" required value="${esc(v.bizNo)}" placeholder="000-00-00000"></td>
+        <td><input id="ef-projectName" required value="${esc(v.projectName)}" placeholder="공사명"></td>
+        <td><input id="ef-location" required value="${esc(v.location)}" placeholder="공사장소재지"></td>
+        <td class="td-period-edit">
+          <input id="ef-start" type="date" required value="${esc(v.start)}">~<input id="ef-end" type="date" required value="${esc(v.end)}">
+        </td>
+        <td><input id="ef-amount" type="number" min="0" required value="${esc(v.amount)}"></td>
+        <td class="td-dept-edit">
+          <input id="ef-dept" required value="${esc(v.dept)}" placeholder="담당부서">
+          <input id="ef-manager" required value="${esc(v.manager)}" placeholder="담당자">
+        </td>
+        <td><input id="ef-email" type="email" required value="${esc(v.email)}" placeholder="이메일"></td>
+        <td>-</td>
+        <td class="td-actions">
+          <div class="action-row">
+            <button class="btn-primary" type="submit">저장</button>
+            <button class="btn-cancel" type="button" data-action="cancel-row">취소</button>
+          </div>
+        </td>
+      </tr>`;
 }
 
 function renderHistoryView() {
@@ -495,8 +576,8 @@ function renderMailModal() {
     </div>`;
 }
 
-const FORM_TITLE = { add: '공사건 추가', edit: '계약 정보 수정', renew: '계약 갱신' };
-const FORM_SUBMIT_LABEL = { add: '추가', edit: '저장', renew: '갱신 저장' };
+const FORM_TITLE = { renew: '계약 갱신' };
+const FORM_SUBMIT_LABEL = { renew: '갱신 저장' };
 
 function renderFormModal() {
   if (!state.formOpen) return '';
@@ -509,7 +590,7 @@ function renderFormModal() {
     <div class="modal-overlay">
       <div class="modal-card form-card">
         <div class="modal-header">
-          <div class="modal-title">${FORM_TITLE[state.formMode]}${state.formMode !== 'add' ? ' · ' + esc(v.vendor) : ''}</div>
+          <div class="modal-title">${FORM_TITLE[state.formMode]} · ${esc(v.vendor)}</div>
           <button class="modal-close" data-action="close-form">✕</button>
         </div>
         <form id="contract-form" class="form-body">
@@ -586,6 +667,7 @@ function handleClick(e) {
   switch (action) {
     case 'set-tab':
       state.tab = btn.dataset.tab;
+      state.editingId = null;
       if (state.tab === 'history') {
         if (!state.histContractId || !state.contracts.some(c => c.id === state.histContractId)) {
           state.histContractId = state.contracts[0] ? state.contracts[0].id : null;
@@ -604,7 +686,7 @@ function handleClick(e) {
       render();
       break;
     case 'add':
-      openAddForm();
+      startAddRow();
       break;
     case 'mail': {
       const row = findRaw(btn.dataset.id);
@@ -618,7 +700,7 @@ function handleClick(e) {
     }
     case 'edit': {
       const row = findRaw(btn.dataset.id);
-      if (row) openEditForm(row);
+      if (row) startEditRow(row);
       break;
     }
     case 'delete': {
@@ -626,6 +708,9 @@ function handleClick(e) {
       if (row) handleDelete(row);
       break;
     }
+    case 'cancel-row':
+      cancelEditRow();
+      break;
     case 'close-mail':
       closeMail();
       break;

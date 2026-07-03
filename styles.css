@@ -128,7 +128,7 @@ table, textarea, input, button {
   background: #fff; border: 1px solid #E5E7EB; border-radius: 12px;
   overflow-x: auto;
 }
-table { width: 100%; min-width: 1120px; border-collapse: collapse; }
+table { width: 100%; min-width: 1420px; border-collapse: collapse; }
 thead tr { background: #FAFAFB; }
 th {
   text-align: center; font: 600 13.5px/1 Pretendard, sans-serif; color: #8A8F98;
@@ -154,13 +154,33 @@ td { padding: 13px 14px; }
   font: 400 14.5px/1.3 Pretendard, sans-serif; color: #4b5563;
   min-width: 190px;
 }
+.td-location { font: 400 14px/1.3 Pretendard, sans-serif; color: #6b7280; min-width: 140px; }
 .td-period { font: 400 14px/1 Pretendard, sans-serif; color: #6b7280; white-space: nowrap; }
 .td-amount {
   font: 600 14.5px/1 Pretendard, sans-serif; color: #1A1A1A;
   text-align: right; white-space: nowrap;
 }
 .td-dept { font: 400 14px/1.3 Pretendard, sans-serif; color: #6b7280; white-space: nowrap; }
+.td-email { font: 400 13.5px/1 Pretendard, sans-serif; color: #6b7280; white-space: nowrap; }
 .td-actions .action-row { display: flex; gap: 5px; justify-content: flex-end; }
+
+/* Inline row editing (add / edit within table) */
+.row-editing td { background: #FFFBEA; padding: 8px 10px; vertical-align: top; }
+.row-editing input, .row-editing select {
+  width: 100%;
+  font: 400 13.5px/1 Pretendard, sans-serif;
+  color: #1A1A1A;
+  background: #fff;
+  border: 1px solid #E5E7EB;
+  border-radius: 6px;
+  padding: 7px 8px;
+  outline: none;
+  box-sizing: border-box;
+}
+.td-period-edit { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+.td-period-edit input[type="date"] { width: 124px; }
+.td-dept-edit { display: flex; gap: 4px; }
+.td-dept-edit input { width: 50%; }
 .btn-mail {
   font: 600 13.5px/1 Pretendard, sans-serif; color: #fff; background: var(--accent);
   border: none; border-radius: 6px; padding: 7px 10px; cursor: pointer;
