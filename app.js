@@ -103,13 +103,16 @@ function toDateSafe(v) {
 }
 
 function bucketOf(c) {
+  // Actual expiry always wins: if a renewed contract is later edited (e.g.
+  // via 수정) to an end date that has already passed, it must show 만료
+  // rather than staying 갱신완료 for the rest of the 30-day renewal window.
+  const diff = daysTo(c.end);
+  if (diff < 0) return 'OVERDUE';
   const renewedAt = toDateSafe(c.renewedAt);
   if (renewedAt) {
     const today = new Date();
     if (Math.round((today - renewedAt) / 86400000) <= 30) return 'RENEWED';
   }
-  const diff = daysTo(c.end);
-  if (diff < 0) return 'OVERDUE';
   if (diff <= 30) return 'URGENT';
   return 'UPCOMING';
 }
@@ -723,9 +726,15 @@ function handleClick(e) {
   }
 }
 
+let composing = false;
+
 function handleInput(e) {
   if (e.target.id === 'search-input') {
     state.search = e.target.value;
+    // Re-rendering rebuilds the input element, which aborts an in-progress
+    // Korean/Japanese/Chinese IME composition and splits jamo apart. Defer
+    // the render until composition ends (see handleCompositionEnd below).
+    if (composing) return;
     render();
   } else if (e.target.id === 'mail-textarea') {
     // No re-render needed: nothing else derives from mailBody until send.
@@ -733,10 +742,23 @@ function handleInput(e) {
   }
 }
 
+function handleCompositionStart() {
+  composing = true;
+}
+function handleCompositionEnd(e) {
+  composing = false;
+  if (e.target.id === 'search-input') {
+    state.search = e.target.value;
+    render();
+  }
+}
+
 const appEl = document.getElementById('app');
 appEl.addEventListener('click', handleClick);
 appEl.addEventListener('input', handleInput);
 appEl.addEventListener('submit', handleSubmit);
+appEl.addEventListener('compositionstart', handleCompositionStart);
+appEl.addEventListener('compositionend', handleCompositionEnd);
 
 render();
 
