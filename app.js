@@ -22,6 +22,7 @@ const state = {
   loading: true,
 
   editingId: null,       // null | 'NEW' | contract id currently editable in the table
+  sort: { key: null, dir: null }, // dir: null | 'asc' | 'desc'
 
   bulkOpen: false,
   bulkRows: [],          // parsed preview rows: { raw, values, errors }
@@ -72,6 +73,7 @@ const STATUS_STYLE = {
   RENEWED: { label: '갱신완료', color: '#4B54B8', bg: '#ECEDFB' }
 };
 const BUCKET_ACCENT = { OVERDUE: '#E53935', URGENT: '#FB8C00', UPCOMING: '#B4B9C2', RENEWED: '#5C6BC0' };
+const BUCKET_SORT_ORDER = { OVERDUE: 0, URGENT: 1, UPCOMING: 2, RENEWED: 3 };
 
 // ---- date / format helpers ----
 
@@ -135,18 +137,44 @@ function enrich(c) {
     factoryBg: f.bg,
     projectName: c.projectName,
     location: c.location,
+    start: c.start,
+    end: c.end,
     periodDisp: fmtDate(c.start) + ' ~ ' + fmtDate(c.end),
     amount: fmtAmount(c.amount),
+    amountRaw: Number(c.amount) || 0,
     bizNo: c.bizNo,
+    dept: c.dept,
+    manager: c.manager,
     deptDisp: c.dept + ' · ' + c.manager,
     email: c.email,
     bucket,
+    bucketOrder: BUCKET_SORT_ORDER[bucket],
     statusLabel: s.label,
     statusColor: s.color,
     statusBg: s.bg,
     rowBg: bucket === 'OVERDUE' ? '#FDF2F2' : (bucket === 'URGENT' ? '#FFF8EE' : '#fff'),
     accentBar: (bucket === 'OVERDUE' || bucket === 'URGENT') ? accentBar : 'transparent'
   };
+}
+
+const SORT_ACCESSORS = {
+  factory: r => r.factory,
+  vendor: r => r.vendor,
+  bizNo: r => r.bizNo,
+  projectName: r => r.projectName,
+  location: r => r.location,
+  period: r => r.end,
+  amount: r => r.amountRaw,
+  dept: r => r.dept,
+  email: r => r.email,
+  status: r => r.bucketOrder
+};
+
+function compareRowsBy(key, a, b) {
+  const va = SORT_ACCESSORS[key](a);
+  const vb = SORT_ACCESSORS[key](b);
+  if (typeof va === 'number' && typeof vb === 'number') return va - vb;
+  return String(va).localeCompare(String(vb), 'ko');
 }
 
 function findRaw(id) {
@@ -470,6 +498,15 @@ function renderTabbar() {
   return `<div class="tabbar"><div class="tabbar-inner">${items}</div></div>`;
 }
 
+function sortIndicator(key) {
+  if (state.sort.key !== key) return '';
+  return state.sort.dir === 'asc' ? ' ▲' : ' ▼';
+}
+function thSort(key, label, extraStyle) {
+  const style = extraStyle ? ` style="${extraStyle}"` : '';
+  return `<th class="th-sortable" data-action="sort-col" data-col="${key}"${style}>${label}${sortIndicator(key)}</th>`;
+}
+
 function renderTableView() {
   if (state.loading) {
     return `<div class="table-view"><div class="loading-state">데이터를 불러오는 중입니다...</div></div>`;
@@ -483,6 +520,13 @@ function renderTableView() {
     (state.filter === 'all' || x.statusLabel === state.filter) &&
     (q === '' || x.vendor.includes(q) || x.projectName.includes(q))
   );
+  if (state.sort.key) {
+    const { key, dir } = state.sort;
+    rows = rows.slice().sort((a, b) => {
+      const c = compareRowsBy(key, a, b);
+      return dir === 'asc' ? c : -c;
+    });
+  }
   rows = rows.map((x, i) => Object.assign({}, x, { idx: i + 1 }));
 
   const chips = CHIP_KEYS.map(k => {
@@ -516,16 +560,16 @@ function renderTableView() {
             <thead>
               <tr>
                 <th>연번</th>
-                <th>공장</th>
-                <th style="white-space:nowrap">협력업체명</th>
-                <th>사업자번호</th>
-                <th>공사명</th>
-                <th>소재지</th>
-                <th>사업기간</th>
-                <th>총공사금액</th>
-                <th>담당</th>
-                <th>이메일</th>
-                <th>상태</th>
+                ${thSort('factory', '공장')}
+                ${thSort('vendor', '협력업체명', 'white-space:nowrap')}
+                ${thSort('bizNo', '사업자번호')}
+                ${thSort('projectName', '공사명')}
+                ${thSort('location', '소재지')}
+                ${thSort('period', '사업기간')}
+                ${thSort('amount', '총공사금액')}
+                ${thSort('dept', '담당')}
+                ${thSort('email', '이메일')}
+                ${thSort('status', '상태')}
                 <th>액션</th>
               </tr>
             </thead>
@@ -902,6 +946,18 @@ function handleClick(e) {
     case 'bulk-save':
       saveBulkRows();
       break;
+    case 'sort-col': {
+      const col = btn.dataset.col;
+      if (state.sort.key !== col) {
+        state.sort = { key: col, dir: 'asc' };
+      } else if (state.sort.dir === 'asc') {
+        state.sort = { key: col, dir: 'desc' };
+      } else {
+        state.sort = { key: null, dir: null };
+      }
+      render();
+      break;
+    }
     case 'close-mail':
       closeMail();
       break;

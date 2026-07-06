@@ -135,6 +135,8 @@ th {
   text-align: center; font: 600 13.5px/1 Pretendard, sans-serif; color: #8A8F98;
   padding: 13px 14px;
 }
+.th-sortable { cursor: pointer; user-select: none; }
+.th-sortable:hover { color: #1A1A1A; }
 tbody tr { border-top: 1px solid #F0F1F3; }
 td { padding: 13px 14px; text-align: center; }
 .td-idx {
