@@ -23,6 +23,10 @@ const state = {
 
   editingId: null,       // null | 'NEW' | contract id currently editable in the table
 
+  bulkOpen: false,
+  bulkRows: [],          // parsed preview rows: { raw, values, errors }
+  bulkSaving: false,
+
   mailOpen: false,
   mailContract: null,
   mailBody: '',
@@ -216,6 +220,109 @@ function closeForm() {
   render();
 }
 
+// ---- bulk paste import (from Excel clipboard) ----
+
+function openBulkModal() {
+  state.bulkOpen = true;
+  state.bulkRows = [];
+  render();
+}
+function closeBulkModal() {
+  state.bulkOpen = false;
+  state.bulkRows = [];
+  render();
+}
+
+function parseDateFlexible(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s) return null;
+  // Excel serial date (cell copied without date formatting), Windows epoch 1899-12-30.
+  if (/^\d{4,6}$/.test(s)) {
+    const serial = Number(s);
+    if (serial > 20000 && serial < 80000) {
+      const epoch = new Date(Date.UTC(1899, 11, 30));
+      return toISO(new Date(epoch.getTime() + serial * 86400000));
+    }
+  }
+  // yyyy-mm-dd / yyyy.mm.dd / yyyy/mm/dd / yyyy. m. d (Korean-style, with or without spaces)
+  const m = s.match(/^(\d{4})[.\-/\s]+(\d{1,2})[.\-/\s]+(\d{1,2})\.?$/);
+  if (m) {
+    const [, y, mo, d] = m;
+    return y + '-' + String(mo).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+  }
+  return null;
+}
+
+function parseAmountFlexible(raw) {
+  const s = String(raw == null ? '' : raw).replace(/[^0-9.-]/g, '');
+  if (s === '') return NaN;
+  return Number(s);
+}
+
+function parseBulkRow(cols) {
+  const errors = [];
+  const factory = Number(String(cols[0] || '').replace(/[^0-9]/g, ''));
+  if (![1, 2, 3].includes(factory)) errors.push('공장은 1/2/3만 가능');
+  const vendor = String(cols[1] || '').trim();
+  if (!vendor) errors.push('협력업체명 누락');
+  const bizNo = String(cols[2] || '').trim();
+  if (!bizNo) errors.push('사업자번호 누락');
+  const projectName = String(cols[3] || '').trim();
+  if (!projectName) errors.push('공사명 누락');
+  const location = String(cols[4] || '').trim();
+  if (!location) errors.push('소재지 누락');
+  const start = parseDateFlexible(cols[5]);
+  if (!start) errors.push('시작일 형식 오류');
+  const end = parseDateFlexible(cols[6]);
+  if (!end) errors.push('종료일 형식 오류');
+  const amount = parseAmountFlexible(cols[7]);
+  if (!Number.isFinite(amount) || amount <= 0) errors.push('금액 오류');
+  const dept = String(cols[8] || '').trim();
+  if (!dept) errors.push('담당부서 누락');
+  const manager = String(cols[9] || '').trim();
+  if (!manager) errors.push('담당자 누락');
+  const email = String(cols[10] || '').trim();
+  if (!email) errors.push('이메일 누락');
+  return { values: { factory, vendor, bizNo, projectName, location, start, end, amount, dept, manager, email }, errors };
+}
+
+function parseBulkText() {
+  const textarea = document.getElementById('bulk-paste-textarea');
+  const headerCheckbox = document.getElementById('bulk-header-checkbox');
+  const text = textarea ? textarea.value : '';
+  const skipHeader = headerCheckbox ? headerCheckbox.checked : true;
+  let lines = text.split(/\r\n|\r|\n/).filter(l => l.trim() !== '');
+  if (skipHeader && lines.length > 0) lines = lines.slice(1);
+  state.bulkRows = lines.map(line => {
+    const cols = line.split('\t');
+    const { values, errors } = parseBulkRow(cols);
+    return { raw: line, values, errors };
+  });
+  render();
+}
+
+async function saveBulkRows() {
+  const rows = state.bulkRows;
+  if (rows.length === 0 || rows.some(r => r.errors.length > 0) || state.bulkSaving) return;
+  state.bulkSaving = true;
+  render();
+  try {
+    await Promise.all(rows.map(r =>
+      addDoc(CONTRACTS_COL, { ...r.values, renewedAt: null, createdAt: serverTimestamp() })
+    ));
+    showToast(rows.length + '건이 일괄 등록되었습니다');
+    state.bulkOpen = false;
+    state.bulkRows = [];
+    state.bulkSaving = false;
+    render();
+  } catch (err) {
+    console.error(err);
+    state.bulkSaving = false;
+    showToast('일괄 저장 중 오류가 발생했습니다: ' + err.message);
+    render();
+  }
+}
+
 async function handleSubmit(e) {
   if (e.target.id === 'contract-form') return handleRenewSubmit(e);
   if (e.target.id === 'row-form') return handleInlineSubmit(e);
@@ -394,7 +501,10 @@ function renderTableView() {
     <div class="table-view">
       <div class="table-header">
         <div class="table-title">${TABLE_TITLE[state.tab] || ''}</div>
-        <button class="btn-add" type="button" data-action="add">+ 공사건 추가</button>
+        <div class="table-header-actions">
+          <button class="btn-secondary" type="button" data-action="bulk-open">엑셀 붙여넣기 일괄등록</button>
+          <button class="btn-add" type="button" data-action="add">+ 공사건 추가</button>
+        </div>
       </div>
       <div class="toolbar">
         <input id="search-input" class="search-input" placeholder="협력업체·공사명 검색" value="${esc(state.search)}" />
@@ -619,6 +729,70 @@ function renderFormModal() {
     </div>`;
 }
 
+function renderBulkModal() {
+  if (!state.bulkOpen) return '';
+  const rows = state.bulkRows;
+  const errorCount = rows.filter(r => r.errors.length > 0).length;
+  const okCount = rows.length - errorCount;
+  const canSave = rows.length > 0 && errorCount === 0 && !state.bulkSaving;
+
+  const previewRows = rows.map((r, i) => {
+    const v = r.values;
+    const hasErr = r.errors.length > 0;
+    return `
+      <tr style="background:${hasErr ? '#FDECEC' : '#fff'}">
+        <td>${i + 1}</td>
+        <td>${v.factory || ''}</td>
+        <td>${esc(v.vendor)}</td>
+        <td>${esc(v.bizNo)}</td>
+        <td>${esc(v.projectName)}</td>
+        <td>${esc(v.location)}</td>
+        <td>${esc(v.start || '')}</td>
+        <td>${esc(v.end || '')}</td>
+        <td>${Number.isFinite(v.amount) ? v.amount.toLocaleString('ko-KR') : ''}</td>
+        <td>${esc(v.dept)}</td>
+        <td>${esc(v.manager)}</td>
+        <td>${esc(v.email)}</td>
+        <td style="color:#E53935">${hasErr ? esc(r.errors.join(', ')) : 'OK'}</td>
+      </tr>`;
+  }).join('');
+
+  return `
+    <div class="modal-overlay">
+      <div class="modal-card bulk-card">
+        <div class="modal-header">
+          <div>
+            <div class="modal-title">엑셀 붙여넣기로 일괄 등록</div>
+            <div class="modal-subtitle">엑셀에서 범위를 복사(Ctrl+C)한 뒤 아래에 붙여넣으세요(Ctrl+V). 열 순서: 공장(1/2/3) · 협력업체명 · 사업자번호 · 공사명 · 소재지 · 시작일 · 종료일 · 총공사금액 · 담당부서 · 담당자 · 이메일</div>
+          </div>
+          <button class="modal-close" type="button" data-action="bulk-close">✕</button>
+        </div>
+        <div class="modal-body">
+          <textarea id="bulk-paste-textarea" class="modal-textarea bulk-textarea" placeholder="엑셀에서 복사한 내용을 여기에 붙여넣으세요"></textarea>
+          <label class="bulk-header-check">
+            <input type="checkbox" id="bulk-header-checkbox" checked> 첫 행은 머릿글입니다 (건너뛰기)
+          </label>
+          <button class="btn-secondary" type="button" data-action="bulk-parse">미리보기 파싱</button>
+          ${rows.length > 0 ? `
+            <div class="bulk-summary">총 ${rows.length}행 · 정상 ${okCount}행 · 오류 ${errorCount}행</div>
+            <div class="bulk-preview-wrap">
+              <table class="bulk-preview-table">
+                <thead><tr>
+                  <th>#</th><th>공장</th><th>업체명</th><th>사업자번호</th><th>공사명</th><th>소재지</th>
+                  <th>시작일</th><th>종료일</th><th>금액</th><th>부서</th><th>담당자</th><th>이메일</th><th>확인</th>
+                </tr></thead>
+                <tbody>${previewRows}</tbody>
+              </table>
+            </div>` : ''}
+        </div>
+        <div class="modal-footer">
+          <button class="btn-cancel" type="button" data-action="bulk-close">취소</button>
+          <button class="btn-primary" type="button" data-action="bulk-save"${canSave ? '' : ' disabled'}>${state.bulkSaving ? '저장 중...' : `일괄 저장 (${okCount}건)`}</button>
+        </div>
+      </div>
+    </div>`;
+}
+
 function renderToast() {
   if (!state.toastShow) return '';
   return `<div class="toast">${esc(state.toast)}</div>`;
@@ -634,6 +808,7 @@ function renderApp() {
     <div class="content">${main}</div>
     ${renderMailModal()}
     ${renderFormModal()}
+    ${renderBulkModal()}
     ${renderToast()}
   `;
 }
@@ -662,6 +837,7 @@ function handleClick(e) {
   if (e.target.classList.contains('modal-overlay')) {
     if (state.mailOpen) closeMail();
     if (state.formOpen) closeForm();
+    if (state.bulkOpen) closeBulkModal();
     return;
   }
   const btn = e.target.closest('[data-action]');
@@ -713,6 +889,18 @@ function handleClick(e) {
     }
     case 'cancel-row':
       cancelEditRow();
+      break;
+    case 'bulk-open':
+      openBulkModal();
+      break;
+    case 'bulk-close':
+      closeBulkModal();
+      break;
+    case 'bulk-parse':
+      parseBulkText();
+      break;
+    case 'bulk-save':
+      saveBulkRows();
       break;
     case 'close-mail':
       closeMail();
