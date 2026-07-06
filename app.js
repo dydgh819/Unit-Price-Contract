@@ -142,6 +142,12 @@ function enrich(c) {
     periodDisp: fmtDate(c.start) + ' ~ ' + fmtDate(c.end),
     amount: fmtAmount(c.amount),
     amountRaw: Number(c.amount) || 0,
+    contractDate: c.contractDate,
+    contractDateDisp: fmtDate(c.contractDate),
+    contractStart: c.contractStart,
+    contractStartDisp: fmtDate(c.contractStart),
+    contractEnd: c.contractEnd,
+    contractEndDisp: fmtDate(c.contractEnd),
     bizNo: c.bizNo,
     dept: c.dept,
     manager: c.manager,
@@ -165,6 +171,9 @@ const SORT_ACCESSORS = {
   location: r => r.location,
   period: r => r.end,
   amount: r => r.amountRaw,
+  contractDate: r => r.contractDate,
+  contractStart: r => r.contractStart,
+  contractEnd: r => r.contractEnd,
   dept: r => r.dept,
   email: r => r.email,
   status: r => r.bucketOrder
@@ -305,13 +314,25 @@ function parseBulkRow(cols) {
   if (!end) errors.push('종료일 형식 오류');
   const amount = parseAmountFlexible(cols[7]);
   if (!Number.isFinite(amount) || amount <= 0) errors.push('금액 오류');
-  const dept = String(cols[8] || '').trim();
+  const contractDate = parseDateFlexible(cols[8]);
+  if (!contractDate) errors.push('계약일자 형식 오류');
+  const contractStart = parseDateFlexible(cols[9]);
+  if (!contractStart) errors.push('계약기간(시작일) 형식 오류');
+  const contractEnd = parseDateFlexible(cols[10]);
+  if (!contractEnd) errors.push('계약기간(종료일) 형식 오류');
+  const dept = String(cols[11] || '').trim();
   if (!dept) errors.push('담당부서 누락');
-  const manager = String(cols[9] || '').trim();
+  const manager = String(cols[12] || '').trim();
   if (!manager) errors.push('담당자 누락');
-  const email = String(cols[10] || '').trim();
+  const email = String(cols[13] || '').trim();
   if (!email) errors.push('이메일 누락');
-  return { values: { factory, vendor, bizNo, projectName, location, start, end, amount, dept, manager, email }, errors };
+  return {
+    values: {
+      factory, vendor, bizNo, projectName, location, start, end, amount,
+      contractDate, contractStart, contractEnd, dept, manager, email
+    },
+    errors
+  };
 }
 
 function parseBulkText() {
@@ -404,6 +425,9 @@ async function handleInlineSubmit(e) {
     start: val('ef-start'),
     end: val('ef-end'),
     amount: Number(val('ef-amount')),
+    contractDate: val('ef-contractDate'),
+    contractStart: val('ef-contractStart'),
+    contractEnd: val('ef-contractEnd'),
     dept: val('ef-dept').trim(),
     manager: val('ef-manager').trim(),
     email: val('ef-email').trim()
@@ -546,7 +570,7 @@ function renderTableView() {
       <div class="table-header">
         <div class="table-title">${TABLE_TITLE[state.tab] || ''}</div>
         <div class="table-header-actions">
-          <button class="btn-secondary" type="button" data-action="bulk-open">엑셀 붙여넣기 일괄등록</button>
+          <button class="btn-bulk" type="button" data-action="bulk-open">엑셀 붙여넣기 일괄등록</button>
           <button class="btn-add" type="button" data-action="add">+ 공사건 추가</button>
         </div>
       </div>
@@ -567,6 +591,9 @@ function renderTableView() {
                 ${thSort('location', '소재지')}
                 ${thSort('period', '사업기간')}
                 ${thSort('amount', '총공사금액')}
+                ${thSort('contractDate', '계약일자')}
+                ${thSort('contractStart', '계약기간(시작일)')}
+                ${thSort('contractEnd', '계약기간(종료일)')}
                 ${thSort('dept', '담당')}
                 ${thSort('email', '이메일')}
                 ${thSort('status', '상태')}
@@ -593,6 +620,9 @@ function renderRow(r) {
         <td class="td-location">${esc(r.location)}</td>
         <td class="td-period">${esc(r.periodDisp)}</td>
         <td class="td-amount">${esc(r.amount)}</td>
+        <td class="td-contract-date">${esc(r.contractDateDisp)}</td>
+        <td class="td-contract-date">${esc(r.contractStartDisp)}</td>
+        <td class="td-contract-date">${esc(r.contractEndDisp)}</td>
         <td class="td-dept">${esc(r.deptDisp)}</td>
         <td class="td-email">${esc(r.email)}</td>
         <td><span class="status-badge" style="color:${r.statusColor};background:${r.statusBg}">${r.statusLabel}</span></td>
@@ -609,7 +639,7 @@ function renderRow(r) {
 
 function renderEditRow(enrichedRow) {
   const raw = enrichedRow ? findRaw(enrichedRow.id) : null;
-  const v = raw || { factory: FACTORY_OF_TAB[state.tab] || 1, vendor: '', bizNo: '', projectName: '', location: '', start: '', end: '', amount: '', dept: '', manager: '', email: '' };
+  const v = raw || { factory: FACTORY_OF_TAB[state.tab] || 1, vendor: '', bizNo: '', projectName: '', location: '', start: '', end: '', amount: '', contractDate: '', contractStart: '', contractEnd: '', dept: '', manager: '', email: '' };
   const idxLabel = enrichedRow ? enrichedRow.idx : '신규';
   const factoryOptions = [1, 2, 3].map(f =>
     `<option value="${f}"${v.factory === f ? ' selected' : ''}>${f}공장</option>`
@@ -627,6 +657,9 @@ function renderEditRow(enrichedRow) {
           <input id="ef-start" type="date" required value="${esc(v.start)}">~<input id="ef-end" type="date" required value="${esc(v.end)}">
         </td>
         <td><input id="ef-amount" type="number" min="0" required value="${esc(v.amount)}"></td>
+        <td><input id="ef-contractDate" type="date" required value="${esc(v.contractDate)}"></td>
+        <td><input id="ef-contractStart" type="date" required value="${esc(v.contractStart)}"></td>
+        <td><input id="ef-contractEnd" type="date" required value="${esc(v.contractEnd)}"></td>
         <td class="td-dept-edit">
           <input id="ef-dept" required value="${esc(v.dept)}" placeholder="담당부서">
           <input id="ef-manager" required value="${esc(v.manager)}" placeholder="담당자">
@@ -794,6 +827,9 @@ function renderBulkModal() {
         <td>${esc(v.start || '')}</td>
         <td>${esc(v.end || '')}</td>
         <td>${Number.isFinite(v.amount) ? v.amount.toLocaleString('ko-KR') : ''}</td>
+        <td>${esc(v.contractDate || '')}</td>
+        <td>${esc(v.contractStart || '')}</td>
+        <td>${esc(v.contractEnd || '')}</td>
         <td>${esc(v.dept)}</td>
         <td>${esc(v.manager)}</td>
         <td>${esc(v.email)}</td>
@@ -807,7 +843,7 @@ function renderBulkModal() {
         <div class="modal-header">
           <div>
             <div class="modal-title">엑셀 붙여넣기로 일괄 등록</div>
-            <div class="modal-subtitle">엑셀에서 범위를 복사(Ctrl+C)한 뒤 아래에 붙여넣으세요(Ctrl+V). 열 순서: 공장(1/2/3) · 협력업체명 · 사업자번호 · 공사명 · 소재지 · 시작일 · 종료일 · 총공사금액 · 담당부서 · 담당자 · 이메일</div>
+            <div class="modal-subtitle">엑셀에서 범위를 복사(Ctrl+C)한 뒤 아래에 붙여넣으세요(Ctrl+V). 열 순서: 공장(1/2/3) · 협력업체명 · 사업자번호 · 공사명 · 소재지 · 사업 시작일 · 사업 종료일 · 총공사금액 · 계약일자 · 계약기간(시작일) · 계약기간(종료일) · 담당부서 · 담당자 · 이메일</div>
           </div>
           <button class="modal-close" type="button" data-action="bulk-close">✕</button>
         </div>
@@ -823,7 +859,8 @@ function renderBulkModal() {
               <table class="bulk-preview-table">
                 <thead><tr>
                   <th>#</th><th>공장</th><th>업체명</th><th>사업자번호</th><th>공사명</th><th>소재지</th>
-                  <th>시작일</th><th>종료일</th><th>금액</th><th>부서</th><th>담당자</th><th>이메일</th><th>확인</th>
+                  <th>시작일</th><th>종료일</th><th>금액</th><th>계약일자</th><th>계약(시작)</th><th>계약(종료)</th>
+                  <th>부서</th><th>담당자</th><th>이메일</th><th>확인</th>
                 </tr></thead>
                 <tbody>${previewRows}</tbody>
               </table>
