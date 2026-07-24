@@ -241,9 +241,19 @@ function openRenewForm(c) {
   state.editingId = null;
   const newStart = addDays(c.end, 1);
   const newEnd = addYearsMinus1Day(newStart);
+  // New contract period follows on from the old one (falling back to the
+  // business period, then today, if no contract period was set yet).
+  const contractBase = c.contractEnd || c.end || toISO(new Date());
+  const newContractStart = addDays(contractBase, c.contractEnd || c.end ? 1 : 0);
+  const newContractEnd = addYearsMinus1Day(newContractStart);
   state.formMode = 'renew';
   state.formContract = c;
-  state.formValues = { factory: c.factory, vendor: c.vendor, bizNo: c.bizNo, projectName: c.projectName, location: c.location, start: newStart, end: newEnd, amount: c.amount, dept: c.dept, manager: c.manager, email: c.email };
+  state.formValues = {
+    factory: c.factory, vendor: c.vendor, bizNo: c.bizNo, projectName: c.projectName, location: c.location,
+    start: newStart, end: newEnd, amount: c.amount,
+    contractDate: toISO(new Date()), contractStart: newContractStart, contractEnd: newContractEnd,
+    dept: c.dept, manager: c.manager, email: c.email
+  };
   state.formOpen = true;
   render();
 }
@@ -389,6 +399,9 @@ async function handleRenewSubmit(e) {
     start: fd.get('start'),
     end: fd.get('end'),
     amount: Number(fd.get('amount')),
+    contractDate: fd.get('contractDate'),
+    contractStart: fd.get('contractStart'),
+    contractEnd: fd.get('contractEnd'),
     dept: String(fd.get('dept') || '').trim(),
     manager: String(fd.get('manager') || '').trim(),
     email: String(fd.get('email') || '').trim()
@@ -792,6 +805,9 @@ function renderFormModal() {
             <label class="form-field"><span>사업 시작일</span><input type="date" name="start" required value="${esc(v.start)}"></label>
             <label class="form-field"><span>사업 종료일</span><input type="date" name="end" required value="${esc(v.end)}"></label>
             <label class="form-field"><span>총공사금액 (원)</span><input type="number" name="amount" min="0" required value="${esc(v.amount)}"></label>
+            <label class="form-field"><span>계약일자</span><input type="date" name="contractDate" value="${esc(v.contractDate)}"></label>
+            <label class="form-field"><span>계약기간(시작일)</span><input type="date" name="contractStart" value="${esc(v.contractStart)}"></label>
+            <label class="form-field"><span>계약기간(종료일)</span><input type="date" name="contractEnd" value="${esc(v.contractEnd)}"></label>
             <label class="form-field"><span>공사담당부서</span><input name="dept" required value="${esc(v.dept)}"></label>
             <label class="form-field"><span>공사담당자</span><input name="manager" required value="${esc(v.manager)}"></label>
             <label class="form-field"><span>담당자 이메일</span><input type="email" name="email" required value="${esc(v.email)}"></label>
