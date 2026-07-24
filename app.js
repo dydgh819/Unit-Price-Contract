@@ -1,7 +1,8 @@
 // 단가계약 기술지도 관리 - Firestore-backed implementation.
 // Data model (Firestore):
 //   contracts/{id}: { factory, vendor, bizNo, projectName, location, start, end,
-//                      amount, dept, manager, email, renewedAt, createdAt }
+//                      amount, contractDate, contractStart, contractEnd,
+//                      dept, manager, email, createdAt }
 //   contracts/{id}/history/{historyId}: { start, end, amount, dept, manager, archivedAt }
 //   -> each "갱신" archives the current period into history, then updates the
 //      parent doc in place. 계약 이력 shows the parent (current) + its history.
@@ -57,8 +58,13 @@ const TAB_DEFS = [
 ];
 const FACTORY_OF_TAB = { f1: 1, f2: 2, f3: 3, all: null };
 const TABLE_TITLE = { f1: '1공장 계약 관리', f2: '2공장 계약 관리', f3: '3공장 계약 관리', all: '전체 계약 관리' };
-const CHIP_KEYS = ['all', '진행중', '만료임박', '만료', '갱신완료'];
-const CHIP_LABEL = { all: '전체' };
+const CHIP_DEFS = [
+  ['all', '전체'],
+  ['OVERDUE', '만료'],
+  ['DDAY', '만료임박'],
+  ['UPCOMING', '진행중'],
+  ['NEED_CONTRACT', '계약 필요']
+];
 const WEEKDAY = ['일', '월', '화', '수', '목', '금', '토'];
 
 const FACTORY_COLOR = {
@@ -67,13 +73,13 @@ const FACTORY_COLOR = {
   3: { color: '#7C5CDB', bg: '#F0ECFB' }
 };
 const STATUS_STYLE = {
-  OVERDUE: { label: '만료', color: '#E53935', bg: '#FDECEC' },
-  URGENT: { label: '만료임박', color: '#C15C00', bg: '#FFF3E0' },
-  UPCOMING: { label: '진행중', color: '#5B6270', bg: '#EEF0F2' },
-  RENEWED: { label: '갱신완료', color: '#4B54B8', bg: '#ECEDFB' }
+  OVERDUE: { color: '#E53935', bg: '#FDECEC' },
+  DDAY: { color: '#C15C00', bg: '#FFF3E0' },
+  UPCOMING: { color: '#5B6270', bg: '#EEF0F2' },
+  NEED_CONTRACT: { color: '#8A8F98', bg: '#EEF0F2' }
 };
-const BUCKET_ACCENT = { OVERDUE: '#E53935', URGENT: '#FB8C00', UPCOMING: '#B4B9C2', RENEWED: '#5C6BC0' };
-const BUCKET_SORT_ORDER = { OVERDUE: 0, URGENT: 1, UPCOMING: 2, RENEWED: 3 };
+const BUCKET_ACCENT = { OVERDUE: '#E53935', DDAY: '#FB8C00', UPCOMING: '#B4B9C2', NEED_CONTRACT: '#B4B9C2' };
+const BUCKET_SORT_ORDER = { OVERDUE: 0, DDAY: 1, NEED_CONTRACT: 2, UPCOMING: 3 };
 
 // ---- date / format helpers ----
 
@@ -103,28 +109,19 @@ function daysTo(end) {
   today.setHours(0, 0, 0, 0);
   return Math.round((e - today) / 86400000);
 }
-function toDateSafe(v) {
-  if (!v) return null;
-  return typeof v.toDate === 'function' ? v.toDate() : new Date(v);
-}
-
-function bucketOf(c) {
-  // Actual expiry always wins: if a renewed contract is later edited (e.g.
-  // via 수정) to an end date that has already passed, it must show 만료
-  // rather than staying 갱신완료 for the rest of the 30-day renewal window.
-  const diff = daysTo(c.end);
-  if (diff < 0) return 'OVERDUE';
-  const renewedAt = toDateSafe(c.renewedAt);
-  if (renewedAt) {
-    const today = new Date();
-    if (Math.round((today - renewedAt) / 86400000) <= 30) return 'RENEWED';
-  }
-  if (diff <= 30) return 'URGENT';
-  return 'UPCOMING';
+// Status is driven by 계약기간(종료일), not 사업기간:
+//   계약기간 종료일이 없으면 '계약 필요', 지났으면 '만료',
+//   30일 이내면 'D-남은일수', 그 외에는 '진행중'.
+function statusOf(c) {
+  if (!c.contractEnd) return { bucket: 'NEED_CONTRACT', label: '계약 필요' };
+  const diff = daysTo(c.contractEnd);
+  if (diff < 0) return { bucket: 'OVERDUE', label: '만료' };
+  if (diff <= 30) return { bucket: 'DDAY', label: 'D-' + diff };
+  return { bucket: 'UPCOMING', label: '진행중' };
 }
 
 function enrich(c) {
-  const bucket = bucketOf(c);
+  const { bucket, label } = statusOf(c);
   const f = FACTORY_COLOR[c.factory];
   const s = STATUS_STYLE[bucket];
   const accentBar = BUCKET_ACCENT[bucket];
@@ -154,11 +151,11 @@ function enrich(c) {
     email: c.email,
     bucket,
     bucketOrder: BUCKET_SORT_ORDER[bucket],
-    statusLabel: s.label,
+    statusLabel: label,
     statusColor: s.color,
     statusBg: s.bg,
-    rowBg: bucket === 'OVERDUE' ? '#FDF2F2' : (bucket === 'URGENT' ? '#FFF8EE' : '#fff'),
-    accentBar: (bucket === 'OVERDUE' || bucket === 'URGENT') ? accentBar : 'transparent'
+    rowBg: bucket === 'OVERDUE' ? '#FDF2F2' : (bucket === 'DDAY' ? '#FFF8EE' : '#fff'),
+    accentBar: (bucket === 'OVERDUE' || bucket === 'DDAY') ? accentBar : 'transparent'
   };
 }
 
@@ -312,12 +309,17 @@ function parseBulkRow(cols) {
   if (!end) errors.push('종료일 형식 오류');
   const amount = parseAmountFlexible(cols[7]);
   if (!Number.isFinite(amount) || amount <= 0) errors.push('금액 오류');
-  const contractDate = parseDateFlexible(cols[8]);
-  if (!contractDate) errors.push('계약일자 형식 오류');
-  const contractStart = parseDateFlexible(cols[9]);
-  if (!contractStart) errors.push('계약기간(시작일) 형식 오류');
-  const contractEnd = parseDateFlexible(cols[10]);
-  if (!contractEnd) errors.push('계약기간(종료일) 형식 오류');
+  // 계약일자/계약기간은 비워둘 수 있음 (미입력 시 상태가 '계약 필요'로 표시됨).
+  // 값이 있는데 형식을 못 알아본 경우만 오류로 처리한다.
+  const contractDateRaw = String(cols[8] || '').trim();
+  const contractDate = contractDateRaw ? parseDateFlexible(contractDateRaw) : null;
+  if (contractDateRaw && !contractDate) errors.push('계약일자 형식 오류');
+  const contractStartRaw = String(cols[9] || '').trim();
+  const contractStart = contractStartRaw ? parseDateFlexible(contractStartRaw) : null;
+  if (contractStartRaw && !contractStart) errors.push('계약기간(시작일) 형식 오류');
+  const contractEndRaw = String(cols[10] || '').trim();
+  const contractEnd = contractEndRaw ? parseDateFlexible(contractEndRaw) : null;
+  if (contractEndRaw && !contractEnd) errors.push('계약기간(종료일) 형식 오류');
   const dept = String(cols[11] || '').trim();
   if (!dept) errors.push('담당부서 누락');
   const manager = String(cols[12] || '').trim();
@@ -355,7 +357,7 @@ async function saveBulkRows() {
   render();
   try {
     await Promise.all(rows.map(r =>
-      addDoc(CONTRACTS_COL, { ...r.values, renewedAt: null, createdAt: serverTimestamp() })
+      addDoc(CONTRACTS_COL, { ...r.values, createdAt: serverTimestamp() })
     ));
     showToast(rows.length + '건이 일괄 등록되었습니다');
     state.bulkOpen = false;
@@ -401,7 +403,7 @@ async function handleRenewSubmit(e) {
       start: old.start, end: old.end, amount: old.amount,
       dept: old.dept, manager: old.manager, archivedAt: serverTimestamp()
     });
-    await updateDoc(doc(db, 'contracts', old.id), { ...values, renewedAt: serverTimestamp() });
+    await updateDoc(doc(db, 'contracts', old.id), values);
     showToast(values.vendor + ' 갱신 처리 완료');
     closeForm();
   } catch (err) {
@@ -436,7 +438,7 @@ async function handleInlineSubmit(e) {
 
   try {
     if (state.editingId === 'NEW') {
-      await addDoc(CONTRACTS_COL, { ...values, renewedAt: null, createdAt: serverTimestamp() });
+      await addDoc(CONTRACTS_COL, { ...values, createdAt: serverTimestamp() });
       showToast(values.vendor + ' 계약이 추가되었습니다');
     } else {
       await updateDoc(doc(db, 'contracts', state.editingId), values);
@@ -539,7 +541,7 @@ function renderTableView() {
   const all = state.contracts.map(enrich);
   let rows = all.filter(x =>
     (factoryFilter == null || x.factory === factoryFilter) &&
-    (state.filter === 'all' || x.statusLabel === state.filter) &&
+    (state.filter === 'all' || x.bucket === state.filter) &&
     (q === '' || x.vendor.includes(q) || x.projectName.includes(q))
   );
   if (state.sort.key) {
@@ -551,9 +553,9 @@ function renderTableView() {
   }
   rows = rows.map((x, i) => Object.assign({}, x, { idx: i + 1 }));
 
-  const chips = CHIP_KEYS.map(k => {
+  const chips = CHIP_DEFS.map(([k, label]) => {
     const on = state.filter === k;
-    return `<button class="chip${on ? ' active' : ''}" data-action="set-filter" data-filter="${k}">${CHIP_LABEL[k] || k}</button>`;
+    return `<button class="chip${on ? ' active' : ''}" data-action="set-filter" data-filter="${k}">${label}</button>`;
   }).join('');
 
   const newRowHtml = state.editingId === 'NEW' ? renderEditRow(null) : '';
@@ -653,9 +655,9 @@ function renderEditRow(enrichedRow) {
           <input id="ef-start" type="date" required value="${esc(v.start)}">~<input id="ef-end" type="date" required value="${esc(v.end)}">
         </td>
         <td><input id="ef-amount" type="number" min="0" required value="${esc(v.amount)}"></td>
-        <td><input id="ef-contractDate" type="date" required value="${esc(v.contractDate)}"></td>
+        <td><input id="ef-contractDate" type="date" value="${esc(v.contractDate)}"></td>
         <td class="td-period-edit">
-          <input id="ef-contractStart" type="date" required value="${esc(v.contractStart)}">~<input id="ef-contractEnd" type="date" required value="${esc(v.contractEnd)}">
+          <input id="ef-contractStart" type="date" value="${esc(v.contractStart)}">~<input id="ef-contractEnd" type="date" value="${esc(v.contractEnd)}">
         </td>
         <td class="td-dept-edit">
           <input id="ef-dept" required value="${esc(v.dept)}" placeholder="담당부서">
@@ -840,7 +842,7 @@ function renderBulkModal() {
         <div class="modal-header">
           <div>
             <div class="modal-title">엑셀 붙여넣기로 일괄 등록</div>
-            <div class="modal-subtitle">엑셀에서 범위를 복사(Ctrl+C)한 뒤 아래에 붙여넣으세요(Ctrl+V). 열 순서: 공장(1/2/3) · 협력업체명 · 사업자번호 · 공사명 · 소재지 · 사업 시작일 · 사업 종료일 · 총공사금액 · 계약일자 · 계약기간(시작일) · 계약기간(종료일) · 담당부서 · 담당자 · 이메일</div>
+            <div class="modal-subtitle">엑셀에서 범위를 복사(Ctrl+C)한 뒤 아래에 붙여넣으세요(Ctrl+V). 열 순서: 공장(1/2/3) · 협력업체명 · 사업자번호 · 공사명 · 소재지 · 사업 시작일 · 사업 종료일 · 총공사금액 · 계약일자 · 계약기간(시작일) · 계약기간(종료일) · 담당부서 · 담당자 · 이메일 (계약일자/계약기간은 비워둘 수 있으며, 비워두면 상태가 '계약 필요'로 표시됩니다)</div>
           </div>
           <button class="modal-close" type="button" data-action="bulk-close">✕</button>
         </div>
@@ -878,7 +880,7 @@ function renderToast() {
 
 function renderApp() {
   const all = state.contracts.map(enrich);
-  const urgentCount = all.filter(x => x.bucket === 'OVERDUE' || x.bucket === 'URGENT').length;
+  const urgentCount = all.filter(x => x.bucket === 'OVERDUE' || x.bucket === 'DDAY').length;
   const main = state.tab === 'history' ? renderHistoryView() : renderTableView();
   return `
     ${renderTopbar(urgentCount)}
