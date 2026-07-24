@@ -186,10 +186,14 @@ td { padding: 13px 14px; text-align: center; }
   outline: none;
   box-sizing: border-box;
 }
-.td-period-edit { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
-.td-period-edit input[type="date"] { width: 124px; }
-.td-dept-edit { display: flex; gap: 4px; }
-.td-dept-edit input { width: 50%; }
+/* Plain inline layout (not flex) avoids table auto-layout/flex sizing
+   conflicts inside <td>, which was pushing these inputs onto a second
+   line and breaking column alignment with the header. */
+.td-period-edit { white-space: nowrap; }
+.td-period-edit input[type="date"] { width: 124px; display: inline-block; }
+.td-dept-edit { white-space: nowrap; }
+.td-dept-edit input { width: 92px; display: inline-block; }
+.td-dept-edit input + input { margin-left: 4px; }
 
 /* Bulk paste import (from Excel clipboard) */
 .bulk-card { width: 920px; max-width: 95vw; }
