@@ -145,9 +145,8 @@ function enrich(c) {
     contractDate: c.contractDate,
     contractDateDisp: fmtDate(c.contractDate),
     contractStart: c.contractStart,
-    contractStartDisp: fmtDate(c.contractStart),
     contractEnd: c.contractEnd,
-    contractEndDisp: fmtDate(c.contractEnd),
+    contractPeriodDisp: fmtDate(c.contractStart) + ' ~ ' + fmtDate(c.contractEnd),
     bizNo: c.bizNo,
     dept: c.dept,
     manager: c.manager,
@@ -172,8 +171,7 @@ const SORT_ACCESSORS = {
   period: r => r.end,
   amount: r => r.amountRaw,
   contractDate: r => r.contractDate,
-  contractStart: r => r.contractStart,
-  contractEnd: r => r.contractEnd,
+  contractPeriod: r => r.contractEnd,
   dept: r => r.dept,
   email: r => r.email,
   status: r => r.bucketOrder
@@ -592,8 +590,7 @@ function renderTableView() {
                 ${thSort('period', '사업기간')}
                 ${thSort('amount', '총공사금액')}
                 ${thSort('contractDate', '계약일자')}
-                ${thSort('contractStart', '계약기간(시작일)')}
-                ${thSort('contractEnd', '계약기간(종료일)')}
+                ${thSort('contractPeriod', '계약기간')}
                 ${thSort('dept', '담당')}
                 ${thSort('email', '이메일')}
                 ${thSort('status', '상태')}
@@ -621,8 +618,7 @@ function renderRow(r) {
         <td class="td-period">${esc(r.periodDisp)}</td>
         <td class="td-amount">${esc(r.amount)}</td>
         <td class="td-contract-date">${esc(r.contractDateDisp)}</td>
-        <td class="td-contract-date">${esc(r.contractStartDisp)}</td>
-        <td class="td-contract-date">${esc(r.contractEndDisp)}</td>
+        <td class="td-period">${esc(r.contractPeriodDisp)}</td>
         <td class="td-dept">${esc(r.deptDisp)}</td>
         <td class="td-email">${esc(r.email)}</td>
         <td><span class="status-badge" style="color:${r.statusColor};background:${r.statusBg}">${r.statusLabel}</span></td>
@@ -658,8 +654,9 @@ function renderEditRow(enrichedRow) {
         </td>
         <td><input id="ef-amount" type="number" min="0" required value="${esc(v.amount)}"></td>
         <td><input id="ef-contractDate" type="date" required value="${esc(v.contractDate)}"></td>
-        <td><input id="ef-contractStart" type="date" required value="${esc(v.contractStart)}"></td>
-        <td><input id="ef-contractEnd" type="date" required value="${esc(v.contractEnd)}"></td>
+        <td class="td-period-edit">
+          <input id="ef-contractStart" type="date" required value="${esc(v.contractStart)}">~<input id="ef-contractEnd" type="date" required value="${esc(v.contractEnd)}">
+        </td>
         <td class="td-dept-edit">
           <input id="ef-dept" required value="${esc(v.dept)}" placeholder="담당부서">
           <input id="ef-manager" required value="${esc(v.manager)}" placeholder="담당자">

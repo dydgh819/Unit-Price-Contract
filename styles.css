@@ -134,7 +134,7 @@ table, textarea, input, button {
   background: #fff; border: 1px solid #E5E7EB; border-radius: 12px;
   overflow-x: auto;
 }
-table { width: 100%; min-width: 1720px; border-collapse: collapse; }
+table { width: 100%; min-width: 1560px; border-collapse: collapse; }
 thead tr { background: #FAFAFB; }
 th {
   text-align: center; font: 600 13.5px/1 Pretendard, sans-serif; color: #8A8F98;
