@@ -109,6 +109,75 @@ function daysTo(end) {
   today.setHours(0, 0, 0, 0);
   return Math.round((e - today) / 86400000);
 }
+
+// ---- masked yyyy-mm-dd date input ----
+// Native <input type="date"> doesn't reliably auto-advance from the year
+// segment to month after 4 digits (fast typing can leave a stray "yyyyyy-mm-dd"
+// state), so 사업기간/계약기간/계약일자 use a single plain-text input with our
+// own digit-count-based mask instead: dashes are auto-inserted after the 4th
+// and 6th digit, which has the effect of moving into the next segment as soon
+// as the previous one is filled.
+function dateMaskDigits(value) {
+  return value.replace(/[^0-9]/g, '');
+}
+function dateMaskFormat(digits) {
+  digits = digits.slice(0, 8);
+  let out = digits.slice(0, 4);
+  if (digits.length > 4) out += '-' + digits.slice(4, 6);
+  if (digits.length > 6) out += '-' + digits.slice(6, 8);
+  return out;
+}
+function dateMaskCaretDigitIndex(value, caret) {
+  return dateMaskDigits(value.slice(0, caret)).length;
+}
+function dateMaskPositionForDigitIndex(formatted, digitIndex) {
+  if (digitIndex <= 0) return 0;
+  let count = 0;
+  for (let i = 0; i < formatted.length; i++) {
+    if (/[0-9]/.test(formatted[i])) {
+      count++;
+      if (count === digitIndex) return i + 1;
+    }
+  }
+  return formatted.length;
+}
+function handleDateMaskInput(input) {
+  const caret = input.selectionStart;
+  const digitIdx = dateMaskCaretDigitIndex(input.value, caret);
+  const formatted = dateMaskFormat(dateMaskDigits(input.value));
+  input.value = formatted;
+  const pos = dateMaskPositionForDigitIndex(formatted, digitIdx);
+  input.setSelectionRange(pos, pos);
+}
+function handleDateMaskKeydown(e) {
+  const input = e.target;
+  if (!input.classList || !input.classList.contains('date-input')) return;
+  if (e.key !== 'Backspace' || input.selectionStart !== input.selectionEnd) return;
+  const caret = input.selectionStart;
+  if (caret > 0 && input.value[caret - 1] === '-') {
+    e.preventDefault();
+    const digitIdx = dateMaskCaretDigitIndex(input.value, caret);
+    const digits = dateMaskDigits(input.value);
+    const newDigits = digits.slice(0, digitIdx - 1) + digits.slice(digitIdx);
+    const formatted = dateMaskFormat(newDigits);
+    input.value = formatted;
+    const pos = dateMaskPositionForDigitIndex(formatted, digitIdx - 1);
+    input.setSelectionRange(pos, pos);
+  }
+}
+function handleDateMaskPaste(e) {
+  const input = e.target;
+  if (!input.classList || !input.classList.contains('date-input')) return;
+  const text = (e.clipboardData || window.clipboardData).getData('text');
+  const parsed = parseDateFlexible(text);
+  const digits = parsed ? parsed.replace(/-/g, '') : dateMaskDigits(text);
+  if (!digits) return;
+  e.preventDefault();
+  const formatted = dateMaskFormat(digits);
+  input.value = formatted;
+  input.setSelectionRange(formatted.length, formatted.length);
+}
+
 // Status is driven by 계약기간(종료일), not 사업기간:
 //   계약기간 종료일이 없으면 '계약 필요', 지났으면 '만료',
 //   30일 이내면 'D-남은일수', 그 외에는 '진행중'.
@@ -665,12 +734,12 @@ function renderEditRow(enrichedRow) {
         <td><input id="ef-projectName" required value="${esc(v.projectName)}" placeholder="공사명"></td>
         <td><input id="ef-location" required value="${esc(v.location)}" placeholder="공사장소재지"></td>
         <td class="td-period-edit">
-          <input id="ef-start" type="date" required value="${esc(v.start)}">~<input id="ef-end" type="date" required value="${esc(v.end)}">
+          <input id="ef-start" type="text" inputmode="numeric" autocomplete="off" class="date-input" placeholder="yyyy-mm-dd" maxlength="10" pattern="\d{4}-\d{2}-\d{2}" required value="${esc(v.start)}">~<input id="ef-end" type="text" inputmode="numeric" autocomplete="off" class="date-input" placeholder="yyyy-mm-dd" maxlength="10" pattern="\d{4}-\d{2}-\d{2}" required value="${esc(v.end)}">
         </td>
         <td><input id="ef-amount" type="number" min="0" required value="${esc(v.amount)}"></td>
-        <td><input id="ef-contractDate" type="date" value="${esc(v.contractDate)}"></td>
+        <td><input id="ef-contractDate" type="text" inputmode="numeric" autocomplete="off" class="date-input" placeholder="yyyy-mm-dd" maxlength="10" pattern="\d{4}-\d{2}-\d{2}" value="${esc(v.contractDate)}"></td>
         <td class="td-period-edit">
-          <input id="ef-contractStart" type="date" value="${esc(v.contractStart)}">~<input id="ef-contractEnd" type="date" value="${esc(v.contractEnd)}">
+          <input id="ef-contractStart" type="text" inputmode="numeric" autocomplete="off" class="date-input" placeholder="yyyy-mm-dd" maxlength="10" pattern="\d{4}-\d{2}-\d{2}" value="${esc(v.contractStart)}">~<input id="ef-contractEnd" type="text" inputmode="numeric" autocomplete="off" class="date-input" placeholder="yyyy-mm-dd" maxlength="10" pattern="\d{4}-\d{2}-\d{2}" value="${esc(v.contractEnd)}">
         </td>
         <td class="td-dept-edit">
           <input id="ef-dept" required value="${esc(v.dept)}" placeholder="담당부서">
@@ -802,12 +871,12 @@ function renderFormModal() {
             <label class="form-field"><span>사업자등록번호</span><input name="bizNo" required value="${esc(v.bizNo)}" placeholder="000-00-00000"></label>
             <label class="form-field"><span>공사장소재지</span><input name="location" required value="${esc(v.location)}"></label>
             <label class="form-field form-field-wide"><span>공사명</span><input name="projectName" required value="${esc(v.projectName)}"></label>
-            <label class="form-field"><span>사업 시작일</span><input type="date" name="start" required value="${esc(v.start)}"></label>
-            <label class="form-field"><span>사업 종료일</span><input type="date" name="end" required value="${esc(v.end)}"></label>
+            <label class="form-field"><span>사업 시작일</span><input type="text" inputmode="numeric" autocomplete="off" class="date-input" placeholder="yyyy-mm-dd" maxlength="10" pattern="\d{4}-\d{2}-\d{2}" name="start" required value="${esc(v.start)}"></label>
+            <label class="form-field"><span>사업 종료일</span><input type="text" inputmode="numeric" autocomplete="off" class="date-input" placeholder="yyyy-mm-dd" maxlength="10" pattern="\d{4}-\d{2}-\d{2}" name="end" required value="${esc(v.end)}"></label>
             <label class="form-field"><span>총공사금액 (원)</span><input type="number" name="amount" min="0" required value="${esc(v.amount)}"></label>
-            <label class="form-field"><span>계약일자</span><input type="date" name="contractDate" value="${esc(v.contractDate)}"></label>
-            <label class="form-field"><span>계약기간(시작일)</span><input type="date" name="contractStart" value="${esc(v.contractStart)}"></label>
-            <label class="form-field"><span>계약기간(종료일)</span><input type="date" name="contractEnd" value="${esc(v.contractEnd)}"></label>
+            <label class="form-field"><span>계약일자</span><input type="text" inputmode="numeric" autocomplete="off" class="date-input" placeholder="yyyy-mm-dd" maxlength="10" pattern="\d{4}-\d{2}-\d{2}" name="contractDate" value="${esc(v.contractDate)}"></label>
+            <label class="form-field"><span>계약기간(시작일)</span><input type="text" inputmode="numeric" autocomplete="off" class="date-input" placeholder="yyyy-mm-dd" maxlength="10" pattern="\d{4}-\d{2}-\d{2}" name="contractStart" value="${esc(v.contractStart)}"></label>
+            <label class="form-field"><span>계약기간(종료일)</span><input type="text" inputmode="numeric" autocomplete="off" class="date-input" placeholder="yyyy-mm-dd" maxlength="10" pattern="\d{4}-\d{2}-\d{2}" name="contractEnd" value="${esc(v.contractEnd)}"></label>
             <label class="form-field"><span>공사담당부서</span><input name="dept" required value="${esc(v.dept)}"></label>
             <label class="form-field"><span>공사담당자</span><input name="manager" required value="${esc(v.manager)}"></label>
             <label class="form-field"><span>담당자 이메일</span><input type="email" name="email" required value="${esc(v.email)}"></label>
@@ -1025,6 +1094,10 @@ function handleClick(e) {
 let composing = false;
 
 function handleInput(e) {
+  if (e.target.classList && e.target.classList.contains('date-input')) {
+    handleDateMaskInput(e.target);
+    return;
+  }
   if (e.target.id === 'search-input') {
     state.search = e.target.value;
     // Re-rendering rebuilds the input element, which aborts an in-progress
@@ -1053,6 +1126,8 @@ const appEl = document.getElementById('app');
 appEl.addEventListener('click', handleClick);
 appEl.addEventListener('input', handleInput);
 appEl.addEventListener('submit', handleSubmit);
+appEl.addEventListener('keydown', handleDateMaskKeydown);
+appEl.addEventListener('paste', handleDateMaskPaste);
 appEl.addEventListener('compositionstart', handleCompositionStart);
 appEl.addEventListener('compositionend', handleCompositionEnd);
 

@@ -190,7 +190,7 @@ td { padding: 13px 14px; text-align: center; }
    conflicts inside <td>, which was pushing these inputs onto a second
    line and breaking column alignment with the header. */
 .td-period-edit { white-space: nowrap; }
-.td-period-edit input[type="date"] { width: 124px; display: inline-block; }
+.td-period-edit input.date-input { width: 124px; display: inline-block; }
 .td-dept-edit { white-space: nowrap; }
 .td-dept-edit input { width: 92px; display: inline-block; }
 .td-dept-edit input + input { margin-left: 4px; }
