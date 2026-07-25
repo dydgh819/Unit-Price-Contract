@@ -51,7 +51,6 @@ table, textarea, input, button {
 }
 .brand-text { display: flex; flex-direction: column; gap: 3px; }
 .brand-title { font: 700 17px/1 Pretendard, sans-serif; color: #fff; }
-.brand-sub { font: 500 13px/1 Pretendard, sans-serif; color: #8A8F98; }
 
 .topbar-right { display: flex; align-items: center; gap: 16px; }
 .today-text { font: 500 14.5px/1 Pretendard, sans-serif; color: #B7BCC6; }
@@ -94,10 +93,9 @@ table, textarea, input, button {
 /* Table view */
 .table-view { padding: 24px 36px; }
 .table-header {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center; justify-content: flex-end;
   margin-bottom: 16px;
 }
-.table-title { font: 700 20px/1 Pretendard, sans-serif; color: #1A1A1A; }
 .btn-add {
   font: 600 15px/1 Pretendard, sans-serif; color: #fff;
   background: var(--accent); border: none; border-radius: 8px;
@@ -236,9 +234,6 @@ td { padding: 13px 14px; text-align: center; }
   padding: 44px; text-align: center; font: 400 15px/1 Pretendard, sans-serif;
   color: #8A8F98;
 }
-.table-footnote {
-  margin-top: 12px; font: 400 14px/1 Pretendard, sans-serif; color: #8A8F98;
-}
 .loading-state {
   padding: 44px; text-align: center; font: 400 15px/1 Pretendard, sans-serif;
   color: #8A8F98;
@@ -246,7 +241,6 @@ td { padding: 13px 14px; text-align: center; }
 
 /* History view */
 .history-view { padding: 24px 36px; max-width: 840px; }
-.history-title { font: 700 20px/1 Pretendard, sans-serif; color: #1A1A1A; margin-bottom: 6px; }
 .history-desc {
   font: 400 15px/1.4 Pretendard, sans-serif; color: #6b7280; margin-bottom: 18px;
 }
