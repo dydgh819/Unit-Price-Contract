@@ -190,26 +190,10 @@ td { padding: 13px 14px; text-align: center; }
    conflicts inside <td>, which was pushing these inputs onto a second
    line and breaking column alignment with the header. */
 .td-period-edit { white-space: nowrap; }
+.td-period-edit input[type="date"] { width: 124px; display: inline-block; }
 .td-dept-edit { white-space: nowrap; }
 .td-dept-edit input { width: 92px; display: inline-block; }
 .td-dept-edit input + input { margin-left: 4px; }
-
-/* Segmented yyyy / mm / dd date input (사업기간, 계약기간, 계약일자).
-   Split into three plain-text fields instead of <input type="date"> because
-   the native widget doesn't reliably auto-advance from the year segment to
-   month after 4 digits, letting fast typing produce a stray "yyyyyy-mm-dd"
-   state. Higher selector specificity here (.date-field .df-part) overrides
-   the generic ".row-editing input" / ".form-field input" width:100% rules. */
-.date-field { display: inline-flex; align-items: center; gap: 2px; vertical-align: middle; }
-.date-field .df-part {
-  font: 400 13.5px/1 Pretendard, sans-serif; color: #1A1A1A;
-  background: #fff; border: 1px solid #E5E7EB; border-radius: 6px;
-  padding: 7px 4px; outline: none; text-align: center;
-}
-.date-field .df-part[data-part="y"] { width: 46px; }
-.date-field .df-part[data-part="mo"],
-.date-field .df-part[data-part="d"] { width: 30px; }
-.date-field .df-sep { color: #8A8F98; font: 400 13px/1 Pretendard, sans-serif; }
 
 /* Bulk paste import (from Excel clipboard) */
 .bulk-card { width: 920px; max-width: 95vw; }
