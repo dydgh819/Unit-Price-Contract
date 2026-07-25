@@ -109,6 +109,90 @@ function daysTo(end) {
   today.setHours(0, 0, 0, 0);
   return Math.round((e - today) / 86400000);
 }
+
+// ---- segmented (yyyy / mm / dd) date input ----
+// Native <input type="date"> doesn't reliably auto-advance from the year
+// segment to month after 4 digits (fast typing can leave a stray "yyyyyy-mm-dd"
+// state), so 사업기간/계약기간 use three plain text inputs instead, with our
+// own auto-advance-on-complete and backspace-to-previous-field behavior.
+
+function splitISODate(v) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v || '');
+  return m ? { y: m[1], mo: m[2], d: m[3] } : { y: '', mo: '', d: '' };
+}
+function isValidCalendarDate(y, mo, d) {
+  const yi = Number(y), mi = Number(mo), di = Number(d);
+  if (!yi || !mi || !di) return false;
+  if (mi < 1 || mi > 12 || di < 1 || di > 31) return false;
+  const dt = new Date(yi, mi - 1, di);
+  return dt.getFullYear() === yi && dt.getMonth() === mi - 1 && dt.getDate() === di;
+}
+function dateFieldHTML(dateId, value) {
+  const { y, mo, d } = splitISODate(value);
+  return `<span class="date-field" data-date-id="${dateId}">` +
+    `<input type="text" inputmode="numeric" autocomplete="off" class="df-part" data-part="y" maxlength="4" placeholder="yyyy" value="${esc(y)}">` +
+    `<span class="df-sep">-</span>` +
+    `<input type="text" inputmode="numeric" autocomplete="off" class="df-part" data-part="mo" maxlength="2" placeholder="mm" value="${esc(mo)}">` +
+    `<span class="df-sep">-</span>` +
+    `<input type="text" inputmode="numeric" autocomplete="off" class="df-part" data-part="d" maxlength="2" placeholder="dd" value="${esc(d)}">` +
+    `</span>`;
+}
+// Returns '' when all three segments are empty (field left blank), null when
+// partially filled or not a real calendar date, otherwise the ISO string.
+function readDateField(dateId, root) {
+  const scope = root || document;
+  const wrap = scope.querySelector(`[data-date-id="${dateId}"]`);
+  if (!wrap) return '';
+  const y = wrap.querySelector('[data-part="y"]').value.trim();
+  const mo = wrap.querySelector('[data-part="mo"]').value.trim();
+  const d = wrap.querySelector('[data-part="d"]').value.trim();
+  if (!y && !mo && !d) return '';
+  if (!isValidCalendarDate(y, mo, d)) return null;
+  return y + '-' + mo.padStart(2, '0') + '-' + d.padStart(2, '0');
+}
+function handleDatePartInput(input) {
+  const part = input.dataset.part;
+  let v = input.value.replace(/[^0-9]/g, '');
+  const maxLen = part === 'y' ? 4 : 2;
+  if (v.length > maxLen) v = v.slice(0, maxLen);
+  input.value = v;
+  if (v.length === maxLen) {
+    const wrap = input.closest('.date-field');
+    const parts = wrap ? Array.from(wrap.querySelectorAll('.df-part')) : [];
+    const next = parts[parts.indexOf(input) + 1];
+    if (next) {
+      next.focus();
+      next.select();
+    }
+  }
+}
+function handleDateFieldKeydown(e) {
+  if (!e.target.classList || !e.target.classList.contains('df-part')) return;
+  if (e.key !== 'Backspace' || e.target.value.length > 0) return;
+  const wrap = e.target.closest('.date-field');
+  const parts = wrap ? Array.from(wrap.querySelectorAll('.df-part')) : [];
+  const prev = parts[parts.indexOf(e.target) - 1];
+  if (prev) {
+    e.preventDefault();
+    prev.focus();
+    prev.setSelectionRange(prev.value.length, prev.value.length);
+  }
+}
+function handleDateFieldPaste(e) {
+  const target = e.target;
+  if (!target.classList || !target.classList.contains('df-part')) return;
+  const text = (e.clipboardData || window.clipboardData).getData('text');
+  const parsed = parseDateFlexible(text);
+  if (!parsed) return;
+  e.preventDefault();
+  const wrap = target.closest('.date-field');
+  if (!wrap) return;
+  const [y, mo, d] = parsed.split('-');
+  wrap.querySelector('[data-part="y"]').value = y;
+  wrap.querySelector('[data-part="mo"]').value = mo;
+  wrap.querySelector('[data-part="d"]').value = d;
+}
+
 // Status is driven by 계약기간(종료일), not 사업기간:
 //   계약기간 종료일이 없으면 '계약 필요', 지났으면 '만료',
 //   30일 이내면 'D-남은일수', 그 외에는 '진행중'.
@@ -390,18 +474,32 @@ async function handleSubmit(e) {
 async function handleRenewSubmit(e) {
   e.preventDefault();
   const fd = new FormData(e.target);
+  const start = readDateField('rf-start', e.target);
+  const end = readDateField('rf-end', e.target);
+  const contractDate = readDateField('rf-contractDate', e.target);
+  const contractStart = readDateField('rf-contractStart', e.target);
+  const contractEnd = readDateField('rf-contractEnd', e.target);
+  if (start === null || end === null) {
+    showToast('사업기간을 yyyy-mm-dd 형식으로 정확히 입력해주세요');
+    return;
+  }
+  if (!start || !end) {
+    showToast('사업 시작일과 종료일을 입력해주세요');
+    return;
+  }
+  if (contractDate === null || contractStart === null || contractEnd === null) {
+    showToast('계약기간을 yyyy-mm-dd 형식으로 정확히 입력해주세요');
+    return;
+  }
   const values = {
     factory: Number(fd.get('factory')),
     vendor: String(fd.get('vendor') || '').trim(),
     bizNo: String(fd.get('bizNo') || '').trim(),
     projectName: String(fd.get('projectName') || '').trim(),
     location: String(fd.get('location') || '').trim(),
-    start: fd.get('start'),
-    end: fd.get('end'),
+    start, end,
     amount: Number(fd.get('amount')),
-    contractDate: fd.get('contractDate'),
-    contractStart: fd.get('contractStart'),
-    contractEnd: fd.get('contractEnd'),
+    contractDate, contractStart, contractEnd,
     dept: String(fd.get('dept') || '').trim(),
     manager: String(fd.get('manager') || '').trim(),
     email: String(fd.get('email') || '').trim()
@@ -429,18 +527,32 @@ async function handleRenewSubmit(e) {
 async function handleInlineSubmit(e) {
   e.preventDefault();
   const val = id => document.getElementById(id).value;
+  const start = readDateField('ef-start', e.target);
+  const end = readDateField('ef-end', e.target);
+  const contractDate = readDateField('ef-contractDate', e.target);
+  const contractStart = readDateField('ef-contractStart', e.target);
+  const contractEnd = readDateField('ef-contractEnd', e.target);
+  if (start === null || end === null) {
+    showToast('사업기간을 yyyy-mm-dd 형식으로 정확히 입력해주세요');
+    return;
+  }
+  if (!start || !end) {
+    showToast('사업 시작일과 종료일을 입력해주세요');
+    return;
+  }
+  if (contractDate === null || contractStart === null || contractEnd === null) {
+    showToast('계약기간을 yyyy-mm-dd 형식으로 정확히 입력해주세요');
+    return;
+  }
   const values = {
     factory: Number(val('ef-factory')),
     vendor: val('ef-vendor').trim(),
     bizNo: val('ef-bizNo').trim(),
     projectName: val('ef-projectName').trim(),
     location: val('ef-location').trim(),
-    start: val('ef-start'),
-    end: val('ef-end'),
+    start, end,
     amount: Number(val('ef-amount')),
-    contractDate: val('ef-contractDate'),
-    contractStart: val('ef-contractStart'),
-    contractEnd: val('ef-contractEnd'),
+    contractDate, contractStart, contractEnd,
     dept: val('ef-dept').trim(),
     manager: val('ef-manager').trim(),
     email: val('ef-email').trim()
@@ -665,12 +777,12 @@ function renderEditRow(enrichedRow) {
         <td><input id="ef-projectName" required value="${esc(v.projectName)}" placeholder="공사명"></td>
         <td><input id="ef-location" required value="${esc(v.location)}" placeholder="공사장소재지"></td>
         <td class="td-period-edit">
-          <input id="ef-start" type="date" required value="${esc(v.start)}">~<input id="ef-end" type="date" required value="${esc(v.end)}">
+          ${dateFieldHTML('ef-start', v.start)}~${dateFieldHTML('ef-end', v.end)}
         </td>
         <td><input id="ef-amount" type="number" min="0" required value="${esc(v.amount)}"></td>
-        <td><input id="ef-contractDate" type="date" value="${esc(v.contractDate)}"></td>
+        <td>${dateFieldHTML('ef-contractDate', v.contractDate)}</td>
         <td class="td-period-edit">
-          <input id="ef-contractStart" type="date" value="${esc(v.contractStart)}">~<input id="ef-contractEnd" type="date" value="${esc(v.contractEnd)}">
+          ${dateFieldHTML('ef-contractStart', v.contractStart)}~${dateFieldHTML('ef-contractEnd', v.contractEnd)}
         </td>
         <td class="td-dept-edit">
           <input id="ef-dept" required value="${esc(v.dept)}" placeholder="담당부서">
@@ -802,12 +914,12 @@ function renderFormModal() {
             <label class="form-field"><span>사업자등록번호</span><input name="bizNo" required value="${esc(v.bizNo)}" placeholder="000-00-00000"></label>
             <label class="form-field"><span>공사장소재지</span><input name="location" required value="${esc(v.location)}"></label>
             <label class="form-field form-field-wide"><span>공사명</span><input name="projectName" required value="${esc(v.projectName)}"></label>
-            <label class="form-field"><span>사업 시작일</span><input type="date" name="start" required value="${esc(v.start)}"></label>
-            <label class="form-field"><span>사업 종료일</span><input type="date" name="end" required value="${esc(v.end)}"></label>
+            <label class="form-field"><span>사업 시작일</span>${dateFieldHTML('rf-start', v.start)}</label>
+            <label class="form-field"><span>사업 종료일</span>${dateFieldHTML('rf-end', v.end)}</label>
             <label class="form-field"><span>총공사금액 (원)</span><input type="number" name="amount" min="0" required value="${esc(v.amount)}"></label>
-            <label class="form-field"><span>계약일자</span><input type="date" name="contractDate" value="${esc(v.contractDate)}"></label>
-            <label class="form-field"><span>계약기간(시작일)</span><input type="date" name="contractStart" value="${esc(v.contractStart)}"></label>
-            <label class="form-field"><span>계약기간(종료일)</span><input type="date" name="contractEnd" value="${esc(v.contractEnd)}"></label>
+            <label class="form-field"><span>계약일자</span>${dateFieldHTML('rf-contractDate', v.contractDate)}</label>
+            <label class="form-field"><span>계약기간(시작일)</span>${dateFieldHTML('rf-contractStart', v.contractStart)}</label>
+            <label class="form-field"><span>계약기간(종료일)</span>${dateFieldHTML('rf-contractEnd', v.contractEnd)}</label>
             <label class="form-field"><span>공사담당부서</span><input name="dept" required value="${esc(v.dept)}"></label>
             <label class="form-field"><span>공사담당자</span><input name="manager" required value="${esc(v.manager)}"></label>
             <label class="form-field"><span>담당자 이메일</span><input type="email" name="email" required value="${esc(v.email)}"></label>
@@ -1025,6 +1137,10 @@ function handleClick(e) {
 let composing = false;
 
 function handleInput(e) {
+  if (e.target.classList && e.target.classList.contains('df-part')) {
+    handleDatePartInput(e.target);
+    return;
+  }
   if (e.target.id === 'search-input') {
     state.search = e.target.value;
     // Re-rendering rebuilds the input element, which aborts an in-progress
@@ -1053,6 +1169,8 @@ const appEl = document.getElementById('app');
 appEl.addEventListener('click', handleClick);
 appEl.addEventListener('input', handleInput);
 appEl.addEventListener('submit', handleSubmit);
+appEl.addEventListener('keydown', handleDateFieldKeydown);
+appEl.addEventListener('paste', handleDateFieldPaste);
 appEl.addEventListener('compositionstart', handleCompositionStart);
 appEl.addEventListener('compositionend', handleCompositionEnd);
 
