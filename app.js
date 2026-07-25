@@ -116,20 +116,17 @@ function daysTo(end) {
 // own digit-count-based mask instead: dashes are auto-inserted after the 4th
 // and 6th digit, which has the effect of moving into the next segment as soon
 // as the previous one is filled.
-function dateMaskDigits(value) {
+//
+// digitsOnly / caretDigitIndex / positionForDigitIndex are generic
+// digit-position helpers shared by both the date mask (dashes) and the
+// amount mask (thousands commas) below.
+function digitsOnly(value) {
   return value.replace(/[^0-9]/g, '');
 }
-function dateMaskFormat(digits) {
-  digits = digits.slice(0, 8);
-  let out = digits.slice(0, 4);
-  if (digits.length > 4) out += '-' + digits.slice(4, 6);
-  if (digits.length > 6) out += '-' + digits.slice(6, 8);
-  return out;
+function caretDigitIndex(value, caret) {
+  return digitsOnly(value.slice(0, caret)).length;
 }
-function dateMaskCaretDigitIndex(value, caret) {
-  return dateMaskDigits(value.slice(0, caret)).length;
-}
-function dateMaskPositionForDigitIndex(formatted, digitIndex) {
+function positionForDigitIndex(formatted, digitIndex) {
   if (digitIndex <= 0) return 0;
   let count = 0;
   for (let i = 0; i < formatted.length; i++) {
@@ -140,41 +137,77 @@ function dateMaskPositionForDigitIndex(formatted, digitIndex) {
   }
   return formatted.length;
 }
+function dateMaskFormat(digits) {
+  digits = digits.slice(0, 8);
+  let out = digits.slice(0, 4);
+  if (digits.length > 4) out += '-' + digits.slice(4, 6);
+  if (digits.length > 6) out += '-' + digits.slice(6, 8);
+  return out;
+}
+function amountMaskFormat(digits) {
+  return digits ? Number(digits).toLocaleString('ko-KR') : '';
+}
 function handleDateMaskInput(input) {
   const caret = input.selectionStart;
-  const digitIdx = dateMaskCaretDigitIndex(input.value, caret);
-  const formatted = dateMaskFormat(dateMaskDigits(input.value));
+  const digitIdx = caretDigitIndex(input.value, caret);
+  const formatted = dateMaskFormat(digitsOnly(input.value));
   input.value = formatted;
-  const pos = dateMaskPositionForDigitIndex(formatted, digitIdx);
+  const pos = positionForDigitIndex(formatted, digitIdx);
   input.setSelectionRange(pos, pos);
 }
-function handleDateMaskKeydown(e) {
-  const input = e.target;
-  if (!input.classList || !input.classList.contains('date-input')) return;
-  if (e.key !== 'Backspace' || input.selectionStart !== input.selectionEnd) return;
+function handleAmountMaskInput(input) {
   const caret = input.selectionStart;
-  if (caret > 0 && input.value[caret - 1] === '-') {
-    e.preventDefault();
-    const digitIdx = dateMaskCaretDigitIndex(input.value, caret);
-    const digits = dateMaskDigits(input.value);
-    const newDigits = digits.slice(0, digitIdx - 1) + digits.slice(digitIdx);
-    const formatted = dateMaskFormat(newDigits);
-    input.value = formatted;
-    const pos = dateMaskPositionForDigitIndex(formatted, digitIdx - 1);
-    input.setSelectionRange(pos, pos);
+  const digitIdx = caretDigitIndex(input.value, caret);
+  const formatted = amountMaskFormat(digitsOnly(input.value));
+  input.value = formatted;
+  const pos = positionForDigitIndex(formatted, digitIdx);
+  input.setSelectionRange(pos, pos);
+}
+// Shared backspace handling for masked inputs: when the caret sits right
+// after an auto-inserted separator ('-' for dates, ',' for amounts),
+// deleting "nothing" would be confusing, so we remove the last digit of the
+// previous segment instead and re-run the formatter.
+function maskBackspaceOverSeparator(input, isSeparator, formatFn) {
+  const caret = input.selectionStart;
+  if (caret <= 0 || !isSeparator(input.value[caret - 1])) return false;
+  const digitIdx = caretDigitIndex(input.value, caret);
+  const digits = digitsOnly(input.value);
+  const newDigits = digits.slice(0, digitIdx - 1) + digits.slice(digitIdx);
+  const formatted = formatFn(newDigits);
+  input.value = formatted;
+  const pos = positionForDigitIndex(formatted, digitIdx - 1);
+  input.setSelectionRange(pos, pos);
+  return true;
+}
+function handleMaskKeydown(e) {
+  const input = e.target;
+  if (!input.classList || e.key !== 'Backspace' || input.selectionStart !== input.selectionEnd) return;
+  if (input.classList.contains('date-input')) {
+    if (maskBackspaceOverSeparator(input, ch => ch === '-', dateMaskFormat)) e.preventDefault();
+  } else if (input.classList.contains('amount-input')) {
+    if (maskBackspaceOverSeparator(input, ch => ch === ',', amountMaskFormat)) e.preventDefault();
   }
 }
-function handleDateMaskPaste(e) {
+function handleMaskPaste(e) {
   const input = e.target;
-  if (!input.classList || !input.classList.contains('date-input')) return;
+  if (!input.classList) return;
   const text = (e.clipboardData || window.clipboardData).getData('text');
-  const parsed = parseDateFlexible(text);
-  const digits = parsed ? parsed.replace(/-/g, '') : dateMaskDigits(text);
-  if (!digits) return;
-  e.preventDefault();
-  const formatted = dateMaskFormat(digits);
-  input.value = formatted;
-  input.setSelectionRange(formatted.length, formatted.length);
+  if (input.classList.contains('date-input')) {
+    const parsed = parseDateFlexible(text);
+    const digits = parsed ? parsed.replace(/-/g, '') : digitsOnly(text);
+    if (!digits) return;
+    e.preventDefault();
+    const formatted = dateMaskFormat(digits);
+    input.value = formatted;
+    input.setSelectionRange(formatted.length, formatted.length);
+  } else if (input.classList.contains('amount-input')) {
+    const digits = digitsOnly(text);
+    if (!digits) return;
+    e.preventDefault();
+    const formatted = amountMaskFormat(digits);
+    input.value = formatted;
+    input.setSelectionRange(formatted.length, formatted.length);
+  }
 }
 
 // Status is driven by 계약기간(종료일), not 사업기간:
@@ -505,7 +538,7 @@ async function handleInlineSubmit(e) {
     location: val('ef-location').trim(),
     start: val('ef-start'),
     end: val('ef-end'),
-    amount: Number(val('ef-amount')),
+    amount: Number(val('ef-amount').replace(/,/g, '')),
     contractDate: val('ef-contractDate'),
     contractStart: val('ef-contractStart'),
     contractEnd: val('ef-contractEnd'),
@@ -642,20 +675,20 @@ function renderTableView() {
   const rowsHtml = rows.map(r => state.editingId === r.id ? renderEditRow(r) : renderRow(r)).join('');
 
   const emptyMsg = all.length === 0
-    ? '등록된 계약이 없습니다. 우측 상단의 "+ 공사건 추가" 버튼으로 계약을 등록해 주세요.'
+    ? '등록된 계약이 없습니다. 우측 상단의 "공사 건 추가" 버튼으로 계약을 등록해 주세요.'
     : '조건에 맞는 계약이 없습니다.';
 
   return `
     <div class="table-view">
-      <div class="table-header">
-        <div class="table-header-actions">
-          <button class="btn-bulk" type="button" data-action="bulk-open">엑셀 붙여넣기 일괄등록</button>
-          <button class="btn-add" type="button" data-action="add">+ 공사건 추가</button>
-        </div>
-      </div>
       <div class="toolbar">
         <input id="search-input" class="search-input" placeholder="협력업체·공사명 검색" value="${esc(state.search)}" />
         <div class="chips">${chips}</div>
+      </div>
+      <div class="table-header">
+        <div class="table-header-actions">
+          <button class="btn-bulk" type="button" data-action="bulk-open">일괄 업로드</button>
+          <button class="btn-add" type="button" data-action="add">공사 건 추가</button>
+        </div>
       </div>
       <div class="table-card">
         <form id="row-form">
@@ -732,7 +765,7 @@ function renderEditRow(enrichedRow) {
         <td class="td-period-edit">
           <input id="ef-start" type="text" inputmode="numeric" autocomplete="off" class="date-input" placeholder="yyyy-mm-dd" maxlength="10" pattern="\d{4}-\d{2}-\d{2}" required value="${esc(v.start)}">~<input id="ef-end" type="text" inputmode="numeric" autocomplete="off" class="date-input" placeholder="yyyy-mm-dd" maxlength="10" pattern="\d{4}-\d{2}-\d{2}" required value="${esc(v.end)}">
         </td>
-        <td><input id="ef-amount" type="number" min="0" required value="${esc(v.amount)}"></td>
+        <td><input id="ef-amount" type="text" inputmode="numeric" autocomplete="off" class="amount-input" required value="${v.amount ? esc(Number(v.amount).toLocaleString('ko-KR')) : ''}"></td>
         <td><input id="ef-contractDate" type="text" inputmode="numeric" autocomplete="off" class="date-input" placeholder="yyyy-mm-dd" maxlength="10" pattern="\d{4}-\d{2}-\d{2}" value="${esc(v.contractDate)}"></td>
         <td class="td-period-edit">
           <input id="ef-contractStart" type="text" inputmode="numeric" autocomplete="off" class="date-input" placeholder="yyyy-mm-dd" maxlength="10" pattern="\d{4}-\d{2}-\d{2}" value="${esc(v.contractStart)}">~<input id="ef-contractEnd" type="text" inputmode="numeric" autocomplete="off" class="date-input" placeholder="yyyy-mm-dd" maxlength="10" pattern="\d{4}-\d{2}-\d{2}" value="${esc(v.contractEnd)}">
@@ -1092,6 +1125,10 @@ function handleInput(e) {
     handleDateMaskInput(e.target);
     return;
   }
+  if (e.target.classList && e.target.classList.contains('amount-input')) {
+    handleAmountMaskInput(e.target);
+    return;
+  }
   if (e.target.id === 'search-input') {
     state.search = e.target.value;
     // Re-rendering rebuilds the input element, which aborts an in-progress
@@ -1120,8 +1157,8 @@ const appEl = document.getElementById('app');
 appEl.addEventListener('click', handleClick);
 appEl.addEventListener('input', handleInput);
 appEl.addEventListener('submit', handleSubmit);
-appEl.addEventListener('keydown', handleDateMaskKeydown);
-appEl.addEventListener('paste', handleDateMaskPaste);
+appEl.addEventListener('keydown', handleMaskKeydown);
+appEl.addEventListener('paste', handleMaskPaste);
 appEl.addEventListener('compositionstart', handleCompositionStart);
 appEl.addEventListener('compositionend', handleCompositionEnd);
 
