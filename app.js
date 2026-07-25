@@ -57,7 +57,6 @@ const TAB_DEFS = [
   ['history', '계약 이력']
 ];
 const FACTORY_OF_TAB = { f1: 1, f2: 2, f3: 3, all: null };
-const TABLE_TITLE = { f1: '1공장 계약 관리', f2: '2공장 계약 관리', f3: '3공장 계약 관리', all: '전체 계약 관리' };
 const CHIP_DEFS = [
   ['all', '전체'],
   ['OVERDUE', '만료'],
@@ -582,8 +581,7 @@ function renderTopbar(urgentCount) {
       <div class="topbar-left">
         <div class="logo-box"><div class="logo-diamond"></div></div>
         <div class="brand-text">
-          <div class="brand-title">단가계약 기술지도 관리</div>
-          <div class="brand-sub">울산 1·2·3공장</div>
+          <div class="brand-title">한화솔루션 단가계약 공사 기술지도 관리</div>
         </div>
       </div>
       <div class="topbar-right">
@@ -650,7 +648,6 @@ function renderTableView() {
   return `
     <div class="table-view">
       <div class="table-header">
-        <div class="table-title">${TABLE_TITLE[state.tab] || ''}</div>
         <div class="table-header-actions">
           <button class="btn-bulk" type="button" data-action="bulk-open">엑셀 붙여넣기 일괄등록</button>
           <button class="btn-add" type="button" data-action="add">+ 공사건 추가</button>
@@ -686,7 +683,6 @@ function renderTableView() {
         </form>
         ${rows.length === 0 && !newRowHtml ? `<div class="no-rows">${emptyMsg}</div>` : ''}
       </div>
-      <div class="table-footnote">만료 경과·만료임박 건은 좌측 컬러 바와 배경으로 강조됩니다.</div>
     </div>`;
 }
 
@@ -762,7 +758,6 @@ function renderHistoryView() {
   }
   if (state.contracts.length === 0) {
     return `<div class="history-view">
-      <div class="history-title">계약 이력</div>
       <div class="history-desc">등록된 계약이 없습니다. 공사건을 먼저 추가해 주세요.</div>
     </div>`;
   }
@@ -816,7 +811,6 @@ function renderHistoryView() {
 
   return `
     <div class="history-view">
-      <div class="history-title">계약 이력</div>
       <div class="history-desc">업체를 선택하면 최초 계약부터 현재까지의 갱신 계보를 최신순으로 확인할 수 있습니다.</div>
       <div class="history-vendors">${chips}</div>
       <div>${nodesHtml}</div>
