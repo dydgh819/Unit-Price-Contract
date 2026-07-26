@@ -446,6 +446,47 @@ function parseBulkRow(cols) {
   };
 }
 
+const BULK_TEMPLATE_HEADERS = [
+  '공장(1/2/3)*', '협력업체명*', '사업자번호*', '공사명*', '소재지*',
+  '사업 시작일(yyyy-mm-dd)*', '사업 종료일(yyyy-mm-dd)*', '총공사금액*',
+  '계약일자(yyyy-mm-dd, 선택)', '계약기간 시작일(yyyy-mm-dd, 선택)', '계약기간 종료일(yyyy-mm-dd, 선택)',
+  '담당부서*', '담당자*', '이메일*'
+];
+
+function downloadBulkTemplate() {
+  const headerCells = BULK_TEMPLATE_HEADERS
+    .map(h => `<Cell ss:StyleID="Header"><Data ss:Type="String">${esc(h)}</Data></Cell>`)
+    .join('');
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+ <Styles>
+  <Style ss:ID="Header">
+   <Font ss:Bold="1"/>
+   <Interior ss:Color="#FFE3D1" ss:Pattern="Solid"/>
+   <Alignment ss:Horizontal="Center"/>
+  </Style>
+ </Styles>
+ <Worksheet ss:Name="일괄등록양식">
+  <Table>
+   <Row ss:Height="20">${headerCells}</Row>
+  </Table>
+ </Worksheet>
+</Workbook>`;
+  const blob = new Blob(['﻿' + xml], { type: 'application/vnd.ms-excel' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = '일괄등록_양식.xml';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 function parseBulkText() {
   const textarea = document.getElementById('bulk-paste-textarea');
   const headerCheckbox = document.getElementById('bulk-header-checkbox');
@@ -954,11 +995,12 @@ function renderBulkModal() {
         <div class="modal-header">
           <div>
             <div class="modal-title">엑셀 붙여넣기로 일괄 등록</div>
-            <div class="modal-subtitle">엑셀에서 범위를 복사(Ctrl+C)한 뒤 아래에 붙여넣으세요(Ctrl+V). 열 순서: 공장(1/2/3) · 협력업체명 · 사업자번호 · 공사명 · 소재지 · 사업 시작일 · 사업 종료일 · 총공사금액 · 계약일자 · 계약기간(시작일) · 계약기간(종료일) · 담당부서 · 담당자 · 이메일 (계약일자/계약기간은 비워둘 수 있으며, 비워두면 상태가 '계약 필요'로 표시됩니다)</div>
+            <div class="modal-subtitle">① 아래 "엑셀 양식 다운로드"로 받은 양식에 내용을 입력 → ② 입력한 범위를 복사(Ctrl+C) → ③ 아래 칸에 붙여넣기(Ctrl+V). 열 순서: 공장(1/2/3) · 협력업체명 · 사업자번호 · 공사명 · 소재지 · 사업 시작일 · 사업 종료일 · 총공사금액 · 계약일자 · 계약기간(시작일) · 계약기간(종료일) · 담당부서 · 담당자 · 이메일 (계약일자/계약기간은 비워둘 수 있으며, 비워두면 상태가 '계약 필요'로 표시됩니다)</div>
           </div>
           <button class="modal-close" type="button" data-action="bulk-close">✕</button>
         </div>
         <div class="modal-body">
+          <button class="btn-secondary btn-template-download" type="button" data-action="bulk-download-template">⬇ 엑셀 양식 다운로드</button>
           <textarea id="bulk-paste-textarea" class="modal-textarea bulk-textarea" placeholder="엑셀에서 복사한 내용을 여기에 붙여넣으세요"></textarea>
           <label class="bulk-header-check">
             <input type="checkbox" id="bulk-header-checkbox" checked> 첫 행은 머릿글입니다 (건너뛰기)
@@ -1090,6 +1132,9 @@ function handleClick(e) {
       break;
     case 'bulk-parse':
       parseBulkText();
+      break;
+    case 'bulk-download-template':
+      downloadBulkTemplate();
       break;
     case 'bulk-save':
       saveBulkRows();

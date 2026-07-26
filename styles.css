@@ -197,6 +197,7 @@ td { padding: 13px 14px; text-align: center; }
 
 /* Bulk paste import (from Excel clipboard) */
 .bulk-card { width: 920px; max-width: 95vw; }
+.btn-template-download { margin-bottom: 10px; }
 .bulk-textarea {
   width: 100%; height: 130px; font: 400 13.5px/1.5 Pretendard, monospace;
   color: #1A1A1A; border: 1px solid #E5E7EB; border-radius: 9px;
