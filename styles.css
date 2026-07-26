@@ -92,16 +92,12 @@ table, textarea, input, button {
 
 /* Table view */
 .table-view { padding: 24px 36px; }
-.table-header {
-  display: flex; align-items: center; justify-content: flex-end;
-  margin-bottom: 16px;
-}
 .btn-add {
   font: 600 15px/1 Pretendard, sans-serif; color: #fff;
   background: var(--accent); border: none; border-radius: 8px;
   padding: 10px 15px; cursor: pointer;
 }
-.table-header-actions { display: flex; align-items: center; gap: 8px; }
+.table-header-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .btn-bulk {
   font: 600 15px/1 Pretendard, sans-serif; color: var(--accent); background: #fff;
   border: 1px solid var(--accent); border-radius: 8px;
@@ -109,9 +105,10 @@ table, textarea, input, button {
 }
 
 .toolbar {
-  display: flex; align-items: center; gap: 12px; margin-bottom: 14px;
-  flex-wrap: wrap;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-bottom: 16px; flex-wrap: wrap;
 }
+.toolbar-left { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .search-input {
   width: 260px; font: 400 15px/1 Pretendard, sans-serif; color: #1A1A1A;
   background: #fff; border: 1px solid #E5E7EB; border-radius: 8px;

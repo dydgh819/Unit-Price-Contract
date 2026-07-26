@@ -681,10 +681,10 @@ function renderTableView() {
   return `
     <div class="table-view">
       <div class="toolbar">
-        <input id="search-input" class="search-input" placeholder="협력업체·공사명 검색" value="${esc(state.search)}" />
-        <div class="chips">${chips}</div>
-      </div>
-      <div class="table-header">
+        <div class="toolbar-left">
+          <input id="search-input" class="search-input" placeholder="협력업체·공사명 검색" value="${esc(state.search)}" />
+          <div class="chips">${chips}</div>
+        </div>
         <div class="table-header-actions">
           <button class="btn-bulk" type="button" data-action="bulk-open">일괄 업로드</button>
           <button class="btn-add" type="button" data-action="add">공사 건 추가</button>
